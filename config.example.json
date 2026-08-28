@@ -1,0 +1,6 @@
+{
+  "host": "0.0.0.0",
+  "port": 8787,
+  "deviceToken": "replace-with-a-long-random-device-token",
+  "adminKey": "replace-with-a-different-long-random-admin-key"
+}

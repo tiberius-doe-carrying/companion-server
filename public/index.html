@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>T100 局域网控制台</title>
+  <style>
+    body{font-family:system-ui,sans-serif;max-width:900px;margin:30px auto;padding:0 18px;color:#163247;background:#f4f7f9}
+    .card{background:white;border-radius:12px;padding:20px;margin:14px 0;box-shadow:0 2px 12px #0001}
+    label{display:block;margin-top:10px;font-weight:600} input,select,textarea,button{box-sizing:border-box;width:100%;padding:10px;margin-top:5px;border:1px solid #bdd0dc;border-radius:7px}
+    button{background:#1769aa;color:white;font-weight:700;cursor:pointer;margin-top:16px} pre{white-space:pre-wrap;background:#102a3a;color:#d9f1ff;padding:14px;border-radius:8px;max-height:380px;overflow:auto}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:600px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <h1>T100 伴随助手 · 局域网控制台</h1>
+  <div class="card">
+    <div class="grid"><div><label>设备编号</label><input id="deviceId" value="rc-t100-001"></div><div><label>管理密钥</label><input id="adminKey" value="change-admin-key" type="password"></div></div>
+    <label>命令</label><select id="type"><option>OPEN_DJI</option><option>INSPECT_PAGE</option><option>CLICK_TEXT</option><option>OPEN_DEEPLINK</option></select>
+    <label>参数 JSON</label><textarea id="payload" rows="4">{}</textarea>
+    <button onclick="send()">发布命令</button><button onclick="list()">刷新执行记录</button>
+  </div>
+  <div class="card"><b>DJI SmartFarm 底部导航</b><div class="grid"><button onclick="quick('CLICK_TEXT',{text:'数据'})">打开数据页</button><button onclick="quick('CLICK_TEXT',{text:'作业'})">打开作业页</button><button onclick="quick('CLICK_TEXT',{text:'设备'})">打开设备页</button><button onclick="quick('CLICK_TEXT',{text:'我的'})">打开我的页</button></div><button onclick="quick('INSPECT_PAGE',{})">读取当前页面</button></div>
+  <div class="card"><b>结果</b><pre id="result">等待操作</pre></div>
+  <script>
+    const out=v=>result.textContent=JSON.stringify(v,null,2);
+    async function api(url,options={}){options.headers={...(options.headers||{}),'X-Admin-Key':adminKey.value,'Content-Type':'application/json'};const r=await fetch(url,options);const t=await r.text();return {status:r.status,body:t?JSON.parse(t):null}}
+    async function send(){try{out(await api('/api/admin/commands',{method:'POST',body:JSON.stringify({deviceId:deviceId.value,type:type.value,payload:JSON.parse(payload.value)})}))}catch(e){out({error:e.message})}}
+    function quick(t,p){type.value=t;payload.value=JSON.stringify(p,null,2);send()}
+    async function list(){out(await api('/api/admin/commands?deviceId='+encodeURIComponent(deviceId.value)))}
+  </script>
+</body></html>

@@ -1,0 +1,26 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "T100 伴随助手局域网接口", "version": "0.1.0", "description": "成熟系统发布命令，Android 伴随 App 轮询执行并回传结果。"},
+  "servers": [{"url": "http://{host}:8787", "variables": {"host": {"default": "127.0.0.1", "description": "服务端局域网 IPv4 地址"}}}],
+  "tags": [{"name":"Admin","description":"成熟系统/控制台接口"},{"name":"Device","description":"Android 伴随 App 接口"},{"name":"System"}],
+  "paths": {
+    "/api/health": {"get":{"tags":["System"],"summary":"服务健康检查","responses":{"200":{"description":"正常","content":{"application/json":{"schema":{"type":"object"}}}}}}},
+    "/api/admin/commands": {
+      "post":{"tags":["Admin"],"summary":"发布命令","security":[{"AdminKey":[]}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateCommand"},"examples":{"openDeviceTab":{"value":{"deviceId":"rc-t100-001","type":"CLICK_TEXT","payload":{"text":"设备"}}}}}}},"responses":{"201":{"description":"已进入队列","content":{"application/json":{"schema":{"$ref":"#/components/schemas/CommandRecord"}}}},"400":{"description":"参数错误"},"401":{"description":"管理密钥错误"}}},
+      "get":{"tags":["Admin"],"summary":"查询命令记录","security":[{"AdminKey":[]}],"parameters":[{"name":"deviceId","in":"query","schema":{"type":"string"}}],"responses":{"200":{"description":"记录列表","content":{"application/json":{"schema":{"type":"object","properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/CommandRecord"}}}}}}}}}
+    },
+    "/api/admin/commands/{commandId}": {"get":{"tags":["Admin"],"summary":"查询单条命令","security":[{"AdminKey":[]}],"parameters":[{"$ref":"#/components/parameters/CommandId"}],"responses":{"200":{"description":"命令详情","content":{"application/json":{"schema":{"$ref":"#/components/schemas/CommandRecord"}}}},"404":{"description":"不存在"}}}},
+    "/api/device/commands/next": {"get":{"tags":["Device"],"summary":"设备获取下一条命令","security":[{"DeviceBearer":[]}],"parameters":[{"name":"deviceId","in":"query","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"待执行命令","content":{"application/json":{"schema":{"$ref":"#/components/schemas/DeviceCommand"}}}},"204":{"description":"暂无命令"},"401":{"description":"设备令牌错误"}}}},
+    "/api/device/commands/{commandId}/ack": {"post":{"tags":["Device"],"summary":"设备回传执行结果","security":[{"DeviceBearer":[]}],"parameters":[{"$ref":"#/components/parameters/CommandId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Ack"}}}},"responses":{"200":{"description":"已接收","content":{"application/json":{"schema":{"$ref":"#/components/schemas/CommandRecord"}}}},"404":{"description":"命令不存在"}}}}
+  },
+  "components": {
+    "securitySchemes":{"AdminKey":{"type":"apiKey","in":"header","name":"X-Admin-Key"},"DeviceBearer":{"type":"http","scheme":"bearer","bearerFormat":"opaque-device-token"}},
+    "parameters":{"CommandId":{"name":"commandId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}},
+    "schemas": {
+      "CreateCommand":{"type":"object","required":["deviceId","type"],"properties":{"deviceId":{"type":"string"},"type":{"type":"string","enum":["OPEN_DJI","OPEN_DEEPLINK","INSPECT_PAGE","CLICK_TEXT"]},"payload":{"type":"object","additionalProperties":true}}},
+      "DeviceCommand":{"type":"object","required":["id","type","payload"],"properties":{"id":{"type":"string","format":"uuid"},"type":{"type":"string"},"payload":{"type":"object","additionalProperties":true}}},
+      "Ack":{"type":"object","required":["success","message"],"properties":{"success":{"type":"boolean"},"message":{"type":"string"}}},
+      "CommandRecord":{"allOf":[{"$ref":"#/components/schemas/DeviceCommand"},{"type":"object","properties":{"deviceId":{"type":"string"},"status":{"type":"string","enum":["QUEUED","DELIVERED","SUCCEEDED","FAILED"]},"createdAt":{"type":"string","format":"date-time"},"deliveredAt":{"type":"string","format":"date-time"},"acknowledgedAt":{"type":"string","format":"date-time"},"success":{"type":"boolean"},"message":{"type":"string"}}}]}
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "t100-companion-lan-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LAN command queue for the T100 companion Android app",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "engines": { "node": ">=18" }
+}
