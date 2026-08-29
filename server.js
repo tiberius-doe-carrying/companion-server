@@ -18,7 +18,7 @@ const PORT = Number(process.env.T100_PORT || fileConfig.port || 8787);
 const DEVICE_TOKEN = process.env.T100_DEVICE_TOKEN || fileConfig.deviceToken || 'change-device-token';
 const ADMIN_KEY = process.env.T100_ADMIN_KEY || fileConfig.adminKey || 'change-admin-key';
 const MAX_BODY = 128 * 1024;
-const MAX_PRESCRIPTION_FILE = 64 * 1024 * 1024;
+const MAX_PRESCRIPTION_FILE = 512 * 1024 * 1024;
 const prescriptionDir = path.join(__dirname, 'data', 'prescriptions');
 fs.mkdirSync(prescriptionDir, { recursive: true });
 const commands = new Map();
@@ -203,6 +203,7 @@ const server = http.createServer(async (req, res) => {
       const fileName = safeFileName(uploadMatch[1]);
       if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
       if (!fileName) return json(res, 400, { error: 'invalid_file_name' });
+      if (!fileName.toLowerCase().endsWith('.djitile')) return json(res, 400, { error: 'djitile_file_required' });
       const id = crypto.randomUUID();
       const diskPath = path.join(prescriptionDir, `${id}-${fileName}`);
       const received = await receiveFile(req, diskPath);

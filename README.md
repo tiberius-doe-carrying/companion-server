@@ -49,10 +49,10 @@ OpenAPI 文档：`http://127.0.0.1:8787/openapi.json`。
 
 ## 上传处方图
 
-网页控制台可直接选择文件并下发。接口使用原始二进制请求体，最大 64 MiB：
+网页控制台可直接选择 `.djitile` 处方图并下发。接口使用原始二进制请求体，最大 512 MiB；服务端和 Android 均流式处理，适合 300 多 MiB 的文件：
 
 ```http
-PUT /api/admin/prescriptions/prescription.tif?deviceId=rc-t100-001
+PUT /api/admin/prescriptions/prescription.djitile?deviceId=rc-t100-001
 X-Admin-Key: <admin-key>
 Content-Type: application/octet-stream
 
@@ -64,7 +64,7 @@ Content-Type: application/octet-stream
 在 Agras 已显示包含“导入”入口的处方图页面时，可下发：
 
 ```json
-{"deviceId":"rc-t100-001","type":"IMPORT_PRESCRIPTION","payload":{"fileName":"prescription.tif","entryText":"导入","source":"dji","unit":"mu","resample":"max","timeoutMs":15000}}
+{"deviceId":"rc-t100-001","type":"IMPORT_PRESCRIPTION","payload":{"fileName":"prescription.djitile","entryText":"导入","source":"dji","unit":"mu","resample":"max","timeoutMs":15000}}
 ```
 
 伴随 App 只会在 Agras 或系统文件选择器中按指定文件名操作，并按资源 ID 设置导入参数。如果页面结构不匹配则立即失败，不使用坐标猜测。该命令确认的是文件导入，不会上传航线到飞行器，也不会开始任务。

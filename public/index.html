@@ -272,8 +272,8 @@
             </ol>
             <label class="drop" id="dropzone">
               <strong>拖入文件，或点击选择处方图</strong>
-              支持 tif / png 等，最大 64 MiB
-              <input id="prescriptionFile" type="file">
+              仅支持 .djitile，最大 512 MiB
+              <input id="prescriptionFile" type="file" accept=".djitile">
             </label>
             <p class="file-name" id="fileName">尚未选择文件</p>
             <div class="progress" id="progress"><i id="progressBar"></i></div>
@@ -428,6 +428,8 @@
       try {
         const file = selectedFile();
         if (!file) throw new Error('请选择处方图文件');
+        if (!file.name.toLowerCase().endsWith('.djitile')) throw new Error('仅支持 .djitile 处方图文件');
+        if (file.size > 512 * 1024 * 1024) throw new Error('文件不能超过 512 MiB');
         progress.style.display = 'block';
         progressBar.style.width = '8%';
         const xhr = new XMLHttpRequest();
