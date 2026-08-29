@@ -1,31 +1,508 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>T100 局域网控制台</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>T100 伴随控制台</title>
   <style>
-    body{font-family:system-ui,sans-serif;max-width:900px;margin:30px auto;padding:0 18px;color:#163247;background:#f4f7f9}
-    .card{background:white;border-radius:12px;padding:20px;margin:14px 0;box-shadow:0 2px 12px #0001}
-    label{display:block;margin-top:10px;font-weight:600} input,select,textarea,button{box-sizing:border-box;width:100%;padding:10px;margin-top:5px;border:1px solid #bdd0dc;border-radius:7px}
-    button{background:#1769aa;color:white;font-weight:700;cursor:pointer;margin-top:16px} pre{white-space:pre-wrap;background:#102a3a;color:#d9f1ff;padding:14px;border-radius:8px;max-height:380px;overflow:auto}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:600px){.grid{grid-template-columns:1fr}}
+    :root {
+      --bg: #0b110e;
+      --bg-2: #101814;
+      --panel: #151e19;
+      --panel-2: #1b2620;
+      --line: #2a3a31;
+      --line-2: #3a4d42;
+      --text: #e7f0e9;
+      --muted: #8b9c91;
+      --faint: #5f7268;
+      --lime: #9adf4c;
+      --lime-2: #c8f08a;
+      --mint: #4fd4b0;
+      --sky: #6ec8e8;
+      --ok: #6bd98a;
+      --warn: #e8b84a;
+      --bad: #ef6b5c;
+      --shadow: 0 18px 50px #02080580;
+      --radius: 16px;
+      --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font: 15px/1.5 "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 520px at 8% -10%, #1d3a2288, transparent 55%),
+        radial-gradient(900px 420px at 100% 0%, #12342f66, transparent 50%),
+        linear-gradient(180deg, #0e1612 0%, var(--bg) 38%);
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(#9adf4c08 1px, transparent 1px),
+        linear-gradient(90deg, #9adf4c08 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
+    }
+    .app {
+      position: relative;
+      z-index: 1;
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 22px 20px 40px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+    .mark {
+      width: 46px; height: 46px; flex: none;
+      display: grid; place-items: center;
+      border-radius: 14px;
+      background: linear-gradient(160deg, #2a4a28, #16341f);
+      border: 1px solid #4f7a3e;
+      box-shadow: inset 0 1px 0 #c8f08a44, 0 8px 22px #08140c88;
+    }
+    .brand h1 { margin: 0; font-size: 22px; letter-spacing: .02em; }
+    .brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+    .health {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; border-radius: 999px;
+      background: #132018cc; border: 1px solid var(--line);
+      color: var(--muted); font-size: 13px; white-space: nowrap;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 4px #ffffff08; }
+    .dot.on { background: var(--lime); box-shadow: 0 0 0 4px #9adf4c22, 0 0 12px #9adf4c88; }
+    .dot.off { background: var(--bad); box-shadow: 0 0 0 4px #ef6b5c22; }
+    .layout { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: 16px; align-items: start; }
+    .nav, .card, .log {
+      background: linear-gradient(180deg, #1a2420ee, #141c18ee);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .nav { padding: 10px; position: sticky; top: 16px; }
+    .tab {
+      width: 100%; margin: 0; border: 0; background: transparent;
+      color: var(--muted); text-align: left; padding: 12px 14px;
+      border-radius: 12px; cursor: pointer; font: inherit; display: flex; gap: 10px; align-items: center;
+    }
+    .tab:hover { background: #223028; color: var(--text); }
+    .tab.active { background: #24352a; color: var(--lime-2); box-shadow: inset 0 0 0 1px #3d5c3f; }
+    .tab .ico { width: 18px; opacity: .85; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .card { padding: 22px; }
+    .card h2 { margin: 0 0 6px; font-size: 18px; }
+    .lead { margin: 0 0 16px; color: var(--muted); font-size: 13.5px; }
+    .session {
+      display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin-bottom: 16px;
+    }
+    label { display: block; margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 650; letter-spacing: .04em; }
+    input, select, textarea, button {
+      width: 100%; padding: 11px 12px; margin: 0;
+      border: 1px solid var(--line-2); border-radius: 10px;
+      background: #0f1613; color: var(--text); font: inherit;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none; border-color: #6ea84a; box-shadow: 0 0 0 3px #9adf4c22;
+    }
+    textarea { min-height: 128px; font-family: var(--mono); font-size: 13px; resize: vertical; }
+    button {
+      background: linear-gradient(180deg, #8ed63f, #62b02a);
+      color: #10200c; font-weight: 750; cursor: pointer; border: 0;
+      box-shadow: inset 0 1px 0 #f3ffd4aa, 0 8px 18px #2d5a1888;
+    }
+    button:hover { filter: brightness(1.05); }
+    button:active { transform: translateY(1px); }
+    button.secondary {
+      background: #223028; color: var(--text);
+      box-shadow: none; border: 1px solid var(--line-2);
+    }
+    button.ghost { background: transparent; color: var(--muted); box-shadow: none; border: 1px solid var(--line); }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+    .actions.four { grid-template-columns: 1fr 1fr; }
+    .devices { display: grid; gap: 12px; }
+    .empty {
+      padding: 28px 16px; text-align: center; color: var(--muted);
+      border: 1px dashed var(--line-2); border-radius: 12px; background: #101814;
+    }
+    .device {
+      padding: 16px; border-radius: 14px; border: 1px solid var(--line);
+      background: linear-gradient(180deg, #1c2a22, #151e19);
+    }
+    .device .head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .device b { font-family: var(--mono); font-size: 14px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700;
+    }
+    .pill.ok { background: #1d3b28; color: var(--ok); }
+    .pill.bad { background: #3a1d1b; color: #ff9a8e; }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+    .metric { padding: 10px; border-radius: 10px; background: #101814; border: 1px solid #24332b; }
+    .metric span { display: block; color: var(--faint); font-size: 11px; letter-spacing: .04em; }
+    .metric strong { font-size: 13px; }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    .meta { margin-top: 10px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+    .steps { display: grid; gap: 8px; margin: 0 0 16px; padding: 0; list-style: none; }
+    .steps li {
+      display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start;
+      color: var(--muted); font-size: 13.5px;
+    }
+    .steps li::before {
+      content: attr(data-n); width: 28px; height: 28px; border-radius: 50%;
+      display: grid; place-items: center; background: #24352a; color: var(--lime-2);
+      font-size: 12px; font-weight: 800;
+    }
+    .drop {
+      position: relative; margin: 4px 0 8px; padding: 28px 16px; text-align: center;
+      border: 1.5px dashed #4a6a40; border-radius: 14px; background: #111a15;
+      color: var(--muted); cursor: pointer;
+    }
+    .drop.drag { border-color: var(--lime); background: #1a2d1c; color: var(--lime-2); }
+    .drop strong { color: var(--text); display: block; margin-bottom: 4px; }
+    .drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .file-name { margin: 0 0 4px; color: var(--mint); font-family: var(--mono); font-size: 13px; }
+    .progress { height: 6px; border-radius: 99px; background: #24332b; overflow: hidden; margin: 10px 0 0; display: none; }
+    .progress > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--mint), var(--lime)); }
+    .log { padding: 18px; margin-top: 16px; }
+    .log-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .log-head b { font-size: 14px; }
+    .log-tools { display: flex; gap: 8px; }
+    .log-tools button { width: auto; padding: 7px 10px; font-size: 12px; }
+    pre {
+      margin: 0; white-space: pre-wrap; word-break: break-word;
+      background: #0a100d; color: #d5f3c8; padding: 14px; border-radius: 12px;
+      max-height: 280px; overflow: auto; font: 12.5px/1.55 var(--mono); border: 1px solid #223028;
+    }
+    .history { display: grid; gap: 8px; margin-top: 12px; }
+    .cmd {
+      display: grid; grid-template-columns: 92px 1fr auto; gap: 10px; align-items: center;
+      padding: 10px 12px; border-radius: 10px; background: #101814; border: 1px solid #24332b;
+    }
+    .cmd .type { font-family: var(--mono); font-size: 12px; color: var(--sky); }
+    .cmd .msg { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status { font-size: 11px; font-weight: 800; letter-spacing: .04em; }
+    .status.QUEUED { color: var(--warn); }
+    .status.DELIVERED { color: var(--sky); }
+    .status.SUCCEEDED { color: var(--ok); }
+    .status.FAILED { color: var(--bad); }
+    .hint { margin-top: 10px; color: var(--faint); font-size: 12px; }
+    @media (max-width: 860px) {
+      .layout, .session, .metrics, .actions, .actions.four { grid-template-columns: 1fr; }
+      .nav { position: static; display: grid; grid-template-columns: 1fr 1fr; }
+      .cmd { grid-template-columns: 1fr auto; }
+      .cmd .type { grid-column: 1 / -1; }
+      .topbar { flex-wrap: wrap; }
+    }
   </style>
 </head>
 <body>
-  <h1>T100 伴随助手 · 局域网控制台</h1>
-  <div class="card">
-    <div class="grid"><div><label>设备编号</label><input id="deviceId" value="rc-t100-001"></div><div><label>管理密钥</label><input id="adminKey" value="change-admin-key" type="password"></div></div>
-    <label>命令</label><select id="type"><option>OPEN_DJI</option><option>INSPECT_PAGE</option><option>CLICK_TEXT</option><option>OPEN_DEEPLINK</option></select>
-    <label>参数 JSON</label><textarea id="payload" rows="4">{}</textarea>
-    <button onclick="send()">发布命令</button><button onclick="list()">刷新执行记录</button>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">
+          <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+            <path d="M13 3.5 22 8.2v9.6L13 22.5 4 17.8V8.2L13 3.5Z" stroke="#c8f08a" stroke-width="1.6"/>
+            <path d="M8 13h10M13 8.5 16.5 13 13 17.5 9.5 13 13 8.5Z" stroke="#9adf4c" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div>
+          <h1>T100 伴随控制台</h1>
+          <p>局域网设备监控 · 处方图下发 · 安全导航</p>
+        </div>
+      </div>
+      <div class="health" id="health"><span class="dot" id="healthDot"></span><span id="healthText">正在连接服务</span></div>
+    </header>
+
+    <div class="session card">
+      <div>
+        <label for="deviceId">当前设备编号</label>
+        <input id="deviceId" value="rc-t100-001" autocomplete="off">
+      </div>
+      <div>
+        <label for="adminKey">管理密钥</label>
+        <input id="adminKey" type="password" value="change-admin-key" autocomplete="off">
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button class="ghost" type="button" onclick="toggleKey()">显示 / 隐藏</button>
+      </div>
+    </div>
+
+    <div class="layout">
+      <nav class="nav">
+        <button class="tab active" data-panel="devicePanel"><span class="ico">▣</span>设备状态</button>
+        <button class="tab" data-panel="prescriptionPanel"><span class="ico">▤</span>处方图</button>
+        <button class="tab" data-panel="controlPanel"><span class="ico">✈</span>DJI 控制</button>
+        <button class="tab" data-panel="recordPanel"><span class="ico">{ }</span>记录与调试</button>
+      </nav>
+
+      <main>
+        <section id="devicePanel" class="panel active">
+          <div class="card">
+            <h2>设备连接状态</h2>
+            <p class="lead">伴随 App 约每 3 秒上报一次；超过 15 秒无心跳视为离线。状态仅保存在本机内存。</p>
+            <div id="devices" class="devices"><div class="empty">输入管理密钥后刷新设备状态</div></div>
+            <div class="actions">
+              <button type="button" onclick="loadDevices()">立即刷新</button>
+              <button class="secondary" type="button" onclick="list()">查看最近命令</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="prescriptionPanel" class="panel">
+          <div class="card">
+            <h2>处方图传输</h2>
+            <p class="lead">上传只负责把文件送到遥控器公共下载目录并打开 Agras，不会开始作业。</p>
+            <ol class="steps">
+              <li data-n="1">选择电脑上的处方图文件并上传。</li>
+              <li data-n="2">等待设备下载命令显示成功。</li>
+              <li data-n="3">在 Agras 进入包含「导入」入口的处方图页面。</li>
+              <li data-n="4">下发选择文件并确认导入。</li>
+            </ol>
+            <label class="drop" id="dropzone">
+              <strong>拖入文件，或点击选择处方图</strong>
+              支持 tif / png 等，最大 64 MiB
+              <input id="prescriptionFile" type="file">
+            </label>
+            <p class="file-name" id="fileName">尚未选择文件</p>
+            <div class="progress" id="progress"><i id="progressBar"></i></div>
+            <div class="actions">
+              <button type="button" onclick="uploadPrescription()">1. 上传并下发</button>
+              <button class="secondary" type="button" onclick="importPrescription()">2. 选择文件并确认导入</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="controlPanel" class="panel">
+          <div class="card">
+            <h2>DJI Agras 常用控制</h2>
+            <p class="lead">仅发送安全导航命令。锁机、起飞、喷洒、返航等危险操作会被服务端拦截。</p>
+            <div class="actions four">
+              <button type="button" onclick="quick('OPEN_DJI',{})">启动官方 App</button>
+              <button type="button" onclick="quick('INSPECT_PAGE',{})">读取当前页面</button>
+              <button class="secondary" type="button" onclick="quick('BACK',{})">返回</button>
+              <button class="secondary" type="button" onclick="quick('WAIT_PAGE',{timeoutMs:10000})">等待 Agras 前台</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="recordPanel" class="panel">
+          <div class="card">
+            <h2>高级命令</h2>
+            <p class="lead">适合排查页面结构和导入参数。坐标点击必须提供说明，且 x / y 只能在 0 到 1 之间。</p>
+            <label for="type">命令类型</label>
+            <select id="type">
+              <option>OPEN_DJI</option>
+              <option>OPEN_AGRAS</option>
+              <option>OPEN_APP</option>
+              <option>INSPECT_PAGE</option>
+              <option>IMPORT_PRESCRIPTION</option>
+              <option>CLICK_TEXT</option>
+              <option>CLICK_ID</option>
+              <option>CLICK_RATIO</option>
+              <option>WAIT_PAGE</option>
+              <option>BACK</option>
+              <option>OPEN_DEEPLINK</option>
+            </select>
+            <label for="payload" style="margin-top:12px">参数 JSON</label>
+            <textarea id="payload">{}</textarea>
+            <div class="actions">
+              <button type="button" onclick="send()">发布命令</button>
+              <button class="secondary" type="button" onclick="list()">刷新执行记录</button>
+            </div>
+            <p class="hint">当前队列只保存在内存中，重启 Node 服务后会清空。</p>
+          </div>
+        </section>
+
+        <section class="log">
+          <div class="log-head">
+            <b>当前操作结果</b>
+            <div class="log-tools">
+              <button class="ghost" type="button" onclick="copyResult()">复制</button>
+              <button class="ghost" type="button" onclick="clearResult()">清空</button>
+            </div>
+          </div>
+          <pre id="result">等待操作</pre>
+          <div class="history" id="commandHistory"></div>
+        </section>
+      </main>
+    </div>
   </div>
-  <div class="card"><b>DJI SmartFarm 底部导航</b><div class="grid"><button onclick="quick('CLICK_TEXT',{text:'数据'})">打开数据页</button><button onclick="quick('CLICK_TEXT',{text:'作业'})">打开作业页</button><button onclick="quick('CLICK_TEXT',{text:'设备'})">打开设备页</button><button onclick="quick('CLICK_TEXT',{text:'我的'})">打开我的页</button></div><button onclick="quick('INSPECT_PAGE',{})">读取当前页面</button></div>
-  <div class="card"><b>结果</b><pre id="result">等待操作</pre></div>
   <script>
-    const out=v=>result.textContent=JSON.stringify(v,null,2);
-    async function api(url,options={}){options.headers={...(options.headers||{}),'X-Admin-Key':adminKey.value,'Content-Type':'application/json'};const r=await fetch(url,options);const t=await r.text();return {status:r.status,body:t?JSON.parse(t):null}}
-    async function send(){try{out(await api('/api/admin/commands',{method:'POST',body:JSON.stringify({deviceId:deviceId.value,type:type.value,payload:JSON.parse(payload.value)})}))}catch(e){out({error:e.message})}}
-    function quick(t,p){type.value=t;payload.value=JSON.stringify(p,null,2);send()}
-    async function list(){out(await api('/api/admin/commands?deviceId='+encodeURIComponent(deviceId.value)))}
+    const $ = id => document.getElementById(id);
+    const state = { lastResult: '等待操作' };
+    try {
+      const saved = JSON.parse(localStorage.getItem('t100-console') || '{}');
+      if (saved.deviceId) deviceId.value = saved.deviceId;
+      if (saved.adminKey) adminKey.value = saved.adminKey;
+    } catch {}
+    const persist = () => localStorage.setItem('t100-console', JSON.stringify({ deviceId: deviceId.value, adminKey: adminKey.value }));
+    deviceId.addEventListener('change', persist);
+    adminKey.addEventListener('change', persist);
+
+    document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
+      document.querySelectorAll('.tab, .panel').forEach(x => x.classList.remove('active'));
+      tab.classList.add('active');
+      $(tab.dataset.panel).classList.add('active');
+      if (tab.dataset.panel === 'devicePanel') loadDevices();
+      if (tab.dataset.panel === 'recordPanel') list();
+    });
+
+    function toggleKey() {
+      adminKey.type = adminKey.type === 'password' ? 'text' : 'password';
+    }
+    function out(value) {
+      state.lastResult = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      result.textContent = state.lastResult;
+    }
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function ago(iso) {
+      const ms = Date.now() - Date.parse(iso || 0);
+      if (!Number.isFinite(ms)) return '-';
+      if (ms < 1000) return '刚刚';
+      if (ms < 60000) return Math.floor(ms / 1000) + ' 秒前';
+      if (ms < 3600000) return Math.floor(ms / 60000) + ' 分钟前';
+      return new Date(iso).toLocaleString();
+    }
+    function copyResult() {
+      navigator.clipboard.writeText(result.textContent).then(() => healthText.textContent = '结果已复制').catch(() => {});
+    }
+    function clearResult() {
+      commandHistory.innerHTML = '';
+      out('等待操作');
+    }
+
+    async function api(url, options = {}) {
+      options.headers = { ...(options.headers || {}), 'X-Admin-Key': adminKey.value, 'Content-Type': 'application/json' };
+      const response = await fetch(url, options);
+      const text = await response.text();
+      return { status: response.status, body: text ? JSON.parse(text) : null };
+    }
+    async function send() {
+      try {
+        const body = JSON.parse($('payload').value);
+        out(await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({ deviceId: deviceId.value, type: type.value, payload: body }) }));
+        list();
+      } catch (error) { out({ error: error.message }); }
+    }
+    function quick(commandType, commandPayload) {
+      type.value = commandType;
+      $('payload').value = JSON.stringify(commandPayload, null, 2);
+      send();
+    }
+    function selectedFile() { return prescriptionFile.files[0]; }
+    function showFile() {
+      const file = selectedFile();
+      fileName.textContent = file ? file.name + ' · ' + (file.size / 1024 / 1024).toFixed(2) + ' MiB' : '尚未选择文件';
+    }
+    prescriptionFile.addEventListener('change', showFile);
+    ;['dragenter','dragover'].forEach(eventName => dropzone.addEventListener(eventName, event => {
+      event.preventDefault(); dropzone.classList.add('drag');
+    }));
+    ;['dragleave','drop'].forEach(eventName => dropzone.addEventListener(eventName, event => {
+      event.preventDefault(); dropzone.classList.remove('drag');
+    }));
+    dropzone.addEventListener('drop', event => {
+      const file = event.dataTransfer.files[0];
+      if (!file) return;
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      prescriptionFile.files = transfer.files;
+      showFile();
+    });
+
+    async function uploadPrescription() {
+      try {
+        const file = selectedFile();
+        if (!file) throw new Error('请选择处方图文件');
+        progress.style.display = 'block';
+        progressBar.style.width = '8%';
+        const xhr = new XMLHttpRequest();
+        const done = new Promise((resolve, reject) => {
+          xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText ? JSON.parse(xhr.responseText) : null });
+          xhr.onerror = () => reject(new Error('网络错误'));
+        });
+        xhr.upload.onprogress = event => {
+          if (event.lengthComputable) progressBar.style.width = Math.max(8, Math.round(event.loaded / event.total * 100)) + '%';
+        };
+        xhr.open('PUT', '/api/admin/prescriptions/' + encodeURIComponent(file.name) + '?deviceId=' + encodeURIComponent(deviceId.value));
+        xhr.setRequestHeader('X-Admin-Key', adminKey.value);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.send(file);
+        const response = await done;
+        progressBar.style.width = '100%';
+        out(response);
+        if (response.status === 201) list();
+      } catch (error) { out({ error: error.message }); }
+    }
+    function importPrescription() {
+      const file = selectedFile();
+      if (!file) return out({ error: '请选择与已上传文件相同的文件' });
+      quick('IMPORT_PRESCRIPTION', { fileName: file.name, entryText: '导入', source: 'dji', unit: 'mu', resample: 'max', timeoutMs: 15000 });
+    }
+    function renderHistory(items) {
+      commandHistory.innerHTML = (items || []).slice(0, 8).map(item =>
+        `<div class="cmd"><span class="type">${escapeHtml(item.type)}</span><span class="msg">${escapeHtml(item.message || item.status || '')} · ${escapeHtml(ago(item.createdAt))}</span><span class="status ${escapeHtml(item.status || '')}">${escapeHtml(item.status || '')}</span></div>`
+      ).join('');
+    }
+    async function list() {
+      const response = await api('/api/admin/commands?deviceId=' + encodeURIComponent(deviceId.value));
+      out(response);
+      renderHistory(response.body && response.body.items);
+    }
+    async function loadDevices() {
+      try {
+        const response = await api('/api/admin/devices');
+        if (response.status !== 200) {
+          devices.innerHTML = `<div class="empty">读取失败：HTTP ${response.status}${response.body && response.body.error ? ' · ' + escapeHtml(response.body.error) : ''}</div>`;
+          return;
+        }
+        const items = response.body.items || [];
+        devices.innerHTML = items.length ? items.map(device => `
+          <article class="device">
+            <div class="head">
+              <b>${escapeHtml(device.deviceId)}</b>
+              <span class="pill ${device.online ? 'ok' : 'bad'}"><span class="dot ${device.online ? 'on' : 'off'}"></span>${device.online ? '在线' : '离线'}</span>
+            </div>
+            <div class="metrics">
+              <div class="metric"><span>前台服务</span><strong class="${device.foregroundService ? 'ok' : 'bad'}">${device.foregroundService ? '运行中' : '未确认'}</strong></div>
+              <div class="metric"><span>无障碍</span><strong class="${device.accessibilityEnabled ? 'ok' : 'bad'}">${device.accessibilityEnabled ? '已开启' : '未开启'}</strong></div>
+              <div class="metric"><span>Agras</span><strong>${device.agrasInstalled ? '已安装' : '未确认'}</strong></div>
+            </div>
+            <div class="meta">心跳 ${escapeHtml(ago(device.lastSeen))} · Android ${escapeHtml(device.androidVersion || '-')} · App ${escapeHtml(device.companionVersion || '-')} · ${escapeHtml(device.remoteAddress || '')}</div>
+          </article>`).join('') : '<div class="empty">暂无设备心跳。请确认伴随 App 已连接本机局域网地址。</div>';
+      } catch (error) {
+        devices.textContent = '读取失败：' + error.message;
+      }
+    }
+    async function ping() {
+      try {
+        const response = await fetch('/api/health');
+        const body = await response.json();
+        healthDot.className = 'dot on';
+        healthText.textContent = (body.lanUrls && body.lanUrls[0] ? body.lanUrls[0] : '服务已就绪') + ' · 本机控制台';
+      } catch {
+        healthDot.className = 'dot off';
+        healthText.textContent = '服务未连接';
+      }
+    }
+    ping();
+    loadDevices();
+    setInterval(() => { if (devicePanel.classList.contains('active')) loadDevices(); }, 5000);
+    setInterval(ping, 15000);
   </script>
-</body></html>
+</body>
+</html>

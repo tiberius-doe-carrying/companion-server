@@ -18,8 +18,50 @@ const PORT = Number(process.env.T100_PORT || fileConfig.port || 8787);
 const DEVICE_TOKEN = process.env.T100_DEVICE_TOKEN || fileConfig.deviceToken || 'change-device-token';
 const ADMIN_KEY = process.env.T100_ADMIN_KEY || fileConfig.adminKey || 'change-admin-key';
 const MAX_BODY = 128 * 1024;
+const MAX_PRESCRIPTION_FILE = 64 * 1024 * 1024;
+const prescriptionDir = path.join(__dirname, 'data', 'prescriptions');
+fs.mkdirSync(prescriptionDir, { recursive: true });
 const commands = new Map();
 const queues = new Map();
+const devices = new Map();
+const prescriptions = new Map();
+for (const name of fs.readdirSync(prescriptionDir).filter(value => value.endsWith('.json'))) {
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(prescriptionDir, name), 'utf8'));
+    if (record.id && record.fileName && record.diskFile) {
+      record.diskPath = path.join(prescriptionDir, record.diskFile);
+      if (fs.existsSync(record.diskPath)) prescriptions.set(record.id, record);
+    }
+  } catch { }
+}
+const ALLOWED_TYPES = new Set(['OPEN_DJI', 'OPEN_AGRAS', 'OPEN_APP', 'OPEN_DEEPLINK', 'INSPECT_PAGE',
+  'CLICK_TEXT', 'CLICK_ID', 'CLICK_RATIO', 'WAIT_PAGE', 'BACK', 'DOWNLOAD_PRESCRIPTION', 'IMPORT_PRESCRIPTION']);
+const BLOCKED_TERMS = ['锁定', '解锁', '起飞', '开始任务', '执行任务', '返航', '降落', '紧急停止',
+  '喷洒', '播撒', '转让', '删除', 'lock', 'unlock', 'takeoff', 'take_off', 'startmission',
+  'start_mission', 'returntohome', 'return_to_home', 'landing', 'land', 'emergencystop',
+  'emergency_stop', 'spray', 'spread', 'transfer', 'delete'];
+
+function validateCommand(type, payload) {
+  if (!ALLOWED_TYPES.has(type)) return { error: 'unsupported_type', allowed: [...ALLOWED_TYPES] };
+  const app = String(payload.app || '').toLowerCase();
+  if (app && !['smartfarm', 'agras', 'com.dji.agflow', 'com.dji.agrasx'].includes(app)) return { error: 'unsupported_app' };
+  const normalized = JSON.stringify(payload).toLowerCase().replace(/[\s-]/g, '');
+  if (BLOCKED_TERMS.some(term => normalized.includes(term.toLowerCase().replace(/[\s-]/g, '')))) return { error: 'dangerous_operation_blocked' };
+  if (type === 'CLICK_TEXT' && !String(payload.text || '').trim()) return { error: 'text_required' };
+  if (type === 'CLICK_ID' && !String(payload.resourceId || '').trim()) return { error: 'resourceId_required' };
+  if (type === 'CLICK_RATIO') {
+    if (!String(payload.description || '').trim()) return { error: 'description_required_for_coordinate_click' };
+    if (![payload.x, payload.y].every(value => typeof value === 'number' && value >= 0 && value <= 1)) return { error: 'coordinate_ratio_out_of_range' };
+  }
+  if (type === 'WAIT_PAGE' && payload.timeoutMs != null && (!Number.isInteger(payload.timeoutMs) || payload.timeoutMs < 0 || payload.timeoutMs > 60000)) return { error: 'timeoutMs_out_of_range' };
+  if (type === 'IMPORT_PRESCRIPTION') {
+    if (!String(payload.fileName || '').trim()) return { error: 'fileName_required' };
+    if (payload.source != null && !['dji', 'other'].includes(String(payload.source).toLowerCase())) return { error: 'unsupported_prescription_source' };
+    if (payload.unit != null && !['mu', 'ha'].includes(String(payload.unit).toLowerCase())) return { error: 'unsupported_area_unit' };
+    if (payload.resample != null && !['max', 'average'].includes(String(payload.resample).toLowerCase())) return { error: 'unsupported_resample_type' };
+  }
+  return null;
+}
 
 function json(res, status, value) {
   const body = JSON.stringify(value, null, 2);
@@ -68,6 +110,40 @@ function publicCommand(command) {
   return { id: command.id, type: command.type, payload: command.payload };
 }
 
+function safeFileName(value) {
+  const decoded = decodeURIComponent(String(value || '')).trim();
+  if (!decoded || decoded === '.' || decoded === '..' || /[\\/\0]/.test(decoded)) return null;
+  return decoded.replace(/[^\p{L}\p{N}._() -]/gu, '_').slice(0, 180);
+}
+
+async function receiveFile(req, target) {
+  const hash = crypto.createHash('sha256');
+  let size = 0;
+  const output = fs.createWriteStream(target, { flags: 'wx' });
+  try {
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > MAX_PRESCRIPTION_FILE) throw Object.assign(new Error('prescription_file_too_large'), { status: 413 });
+      hash.update(chunk);
+      if (!output.write(chunk)) await new Promise(resolve => output.once('drain', resolve));
+    }
+    await new Promise((resolve, reject) => output.end(error => error ? reject(error) : resolve()));
+    if (!size) throw Object.assign(new Error('prescription_file_empty'), { status: 400 });
+    return { size, sha256: hash.digest('hex') };
+  } catch (error) {
+    output.destroy();
+    try { fs.unlinkSync(target); } catch { }
+    throw error;
+  }
+}
+
+function enqueue(deviceId, type, payload) {
+  const command = { id: crypto.randomUUID(), deviceId, type, payload, status: 'QUEUED', createdAt: new Date().toISOString() };
+  commands.set(command.id, command);
+  queueFor(deviceId).push(command);
+  return command;
+}
+
 function listAddresses() {
   const result = [];
   for (const entries of Object.values(os.networkInterfaces())) {
@@ -76,6 +152,11 @@ function listAddresses() {
     }
   }
   return result;
+}
+
+function deviceView(record) {
+  const lastSeenMs = Date.parse(record.lastSeen || 0);
+  return { ...record, online: Number.isFinite(lastSeenMs) && Date.now() - lastSeenMs <= 15000 };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -93,10 +174,66 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/health') {
       return json(res, 200, { ok: true, time: new Date().toISOString(), lanUrls: listAddresses() });
     }
+    if (req.method === 'POST' && url.pathname === '/api/device/status') {
+      if (!authorizedDevice(req)) return json(res, 401, { error: 'invalid_device_token' });
+      const body = await readJson(req);
+      const deviceId = String(body.deviceId || '').trim();
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      const record = {
+        deviceId, lastSeen: new Date().toISOString(),
+        foregroundService: Boolean(body.foregroundService),
+        accessibilityEnabled: Boolean(body.accessibilityEnabled),
+        agrasInstalled: Boolean(body.agrasInstalled),
+        companionVersion: String(body.companionVersion || ''),
+        androidVersion: String(body.androidVersion || ''),
+        remoteAddress: req.socket.remoteAddress || ''
+      };
+      devices.set(deviceId, record);
+      return json(res, 200, deviceView(record));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/devices') {
+      if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
+      const items = [...devices.values()].map(deviceView).sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
+      return json(res, 200, { items, onlineTimeoutSeconds: 15 });
+    }
+    const uploadMatch = url.pathname.match(/^\/api\/admin\/prescriptions\/([^/]+)$/);
+    if (req.method === 'PUT' && uploadMatch) {
+      if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
+      const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+      const fileName = safeFileName(uploadMatch[1]);
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      if (!fileName) return json(res, 400, { error: 'invalid_file_name' });
+      const id = crypto.randomUUID();
+      const diskPath = path.join(prescriptionDir, `${id}-${fileName}`);
+      const received = await receiveFile(req, diskPath);
+      const record = { id, fileName, diskPath, ...received, createdAt: new Date().toISOString() };
+      prescriptions.set(id, record);
+      fs.writeFileSync(path.join(prescriptionDir, `${id}.json`), JSON.stringify({
+        id, fileName, diskFile: path.basename(diskPath), size: record.size, sha256: record.sha256, createdAt: record.createdAt
+      }));
+      const command = enqueue(deviceId, 'DOWNLOAD_PRESCRIPTION', {
+        prescriptionId: id, fileName, size: record.size, sha256: record.sha256
+      });
+      return json(res, 201, { id, fileName, size: record.size, sha256: record.sha256, commandId: command.id });
+    }
+    const downloadMatch = url.pathname.match(/^\/api\/device\/prescriptions\/([^/]+)$/);
+    if (req.method === 'GET' && downloadMatch) {
+      if (!authorizedDevice(req)) return json(res, 401, { error: 'invalid_device_token' });
+      const record = prescriptions.get(decodeURIComponent(downloadMatch[1]));
+      if (!record || !fs.existsSync(record.diskPath)) return json(res, 404, { error: 'prescription_not_found' });
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream', 'Content-Length': record.size,
+        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(record.fileName)}`,
+        'X-Content-SHA256': record.sha256
+      });
+      return fs.createReadStream(record.diskPath).pipe(res);
+    }
     if (req.method === 'GET' && url.pathname === '/api/device/commands/next') {
       if (!authorizedDevice(req)) return json(res, 401, { error: 'invalid_device_token' });
       const deviceId = url.searchParams.get('deviceId');
       if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      const existing = devices.get(deviceId) || { deviceId };
+      devices.set(deviceId, { ...existing, lastSeen: new Date().toISOString(), remoteAddress: req.socket.remoteAddress || '' });
       const queue = queueFor(deviceId);
       const command = queue.find(item => item.status === 'QUEUED');
       if (!command) { res.writeHead(204); return res.end(); }
@@ -123,15 +260,10 @@ const server = http.createServer(async (req, res) => {
       const deviceId = String(body.deviceId || '').trim();
       const type = String(body.type || '').trim();
       if (!deviceId || !type) return json(res, 400, { error: 'deviceId_and_type_required' });
-      const allowed = new Set(['OPEN_DJI', 'OPEN_DEEPLINK', 'INSPECT_PAGE', 'CLICK_TEXT']);
-      if (!allowed.has(type)) return json(res, 400, { error: 'unsupported_type', allowed: [...allowed] });
-      const command = {
-        id: crypto.randomUUID(), deviceId, type,
-        payload: body.payload && typeof body.payload === 'object' ? body.payload : {},
-        status: 'QUEUED', createdAt: new Date().toISOString()
-      };
-      commands.set(command.id, command);
-      queueFor(deviceId).push(command);
+      const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload : {};
+      const validationError = validateCommand(type, payload);
+      if (validationError) return json(res, 400, validationError);
+      const command = enqueue(deviceId, type, payload);
       return json(res, 201, command);
     }
     if (req.method === 'GET' && url.pathname === '/api/admin/commands') {
