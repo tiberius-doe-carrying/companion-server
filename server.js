@@ -18,17 +18,21 @@ const PORT = Number(process.env.T100_PORT || fileConfig.port || 8787);
 const DEVICE_TOKEN = process.env.T100_DEVICE_TOKEN || fileConfig.deviceToken || 'change-device-token';
 const ADMIN_KEY = process.env.T100_ADMIN_KEY || fileConfig.adminKey || 'change-admin-key';
 const MAX_BODY = 128 * 1024;
-const MAX_PRESCRIPTION_FILE = 512 * 1024 * 1024;
+const MAX_PRESCRIPTION_FILE = 1024 * 1024 * 1024;
 const prescriptionDir = path.join(__dirname, 'data', 'prescriptions');
 fs.mkdirSync(prescriptionDir, { recursive: true });
 const commands = new Map();
 const queues = new Map();
 const devices = new Map();
 const prescriptions = new Map();
+const pendingPrescriptionPairs = new Map();
 for (const name of fs.readdirSync(prescriptionDir).filter(value => value.endsWith('.json'))) {
   try {
     const record = JSON.parse(fs.readFileSync(path.join(prescriptionDir, name), 'utf8'));
-    if (record.id && record.fileName && record.diskFile) {
+    if (record.id && Array.isArray(record.files) && record.files.length === 2) {
+      record.files = record.files.map(file => ({ ...file, diskPath: path.join(prescriptionDir, file.diskFile) }));
+      if (record.files.every(file => fs.existsSync(file.diskPath))) prescriptions.set(record.id, record);
+    } else if (record.id && record.fileName && record.diskFile) {
       record.diskPath = path.join(prescriptionDir, record.diskFile);
       if (fs.existsSync(record.diskPath)) prescriptions.set(record.id, record);
     }
@@ -56,6 +60,7 @@ function validateCommand(type, payload) {
   if (type === 'WAIT_PAGE' && payload.timeoutMs != null && (!Number.isInteger(payload.timeoutMs) || payload.timeoutMs < 0 || payload.timeoutMs > 60000)) return { error: 'timeoutMs_out_of_range' };
   if (type === 'IMPORT_PRESCRIPTION') {
     if (!String(payload.fileName || '').trim()) return { error: 'fileName_required' };
+    if (!String(payload.fileName).toLowerCase().endsWith('.tif')) return { error: 'tif_file_required' };
     if (payload.source != null && !['dji', 'other'].includes(String(payload.source).toLowerCase())) return { error: 'unsupported_prescription_source' };
     if (payload.unit != null && !['mu', 'ha'].includes(String(payload.unit).toLowerCase())) return { error: 'unsupported_area_unit' };
     if (payload.resample != null && !['max', 'average'].includes(String(payload.resample).toLowerCase())) return { error: 'unsupported_resample_type' };
@@ -70,7 +75,7 @@ function json(res, status, value) {
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Admin-Key',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS'
   });
   res.end(body);
 }
@@ -114,6 +119,11 @@ function safeFileName(value) {
   const decoded = decodeURIComponent(String(value || '')).trim();
   if (!decoded || decoded === '.' || decoded === '..' || /[\\/\0]/.test(decoded)) return null;
   return decoded.replace(/[^\p{L}\p{N}._() -]/gu, '_').slice(0, 180);
+}
+
+function prescriptionFileInfo(fileName) {
+  const match = /^(.*)\.(tif|tfw)$/i.exec(fileName || '');
+  return match && match[1] ? { baseName: match[1], extension: match[2].toLowerCase() } : null;
 }
 
 async function receiveFile(req, target) {
@@ -183,6 +193,10 @@ const server = http.createServer(async (req, res) => {
         deviceId, lastSeen: new Date().toISOString(),
         foregroundService: Boolean(body.foregroundService),
         accessibilityEnabled: Boolean(body.accessibilityEnabled),
+        sdCardStatusReported: typeof body.sdCardInserted === 'boolean',
+        sdCardInserted: Boolean(body.sdCardInserted),
+        sdCardWritable: Boolean(body.sdCardWritable),
+        prescriptionImportReady: Boolean(body.prescriptionImportReady),
         agrasInstalled: Boolean(body.agrasInstalled),
         companionVersion: String(body.companionVersion || ''),
         androidVersion: String(body.androidVersion || ''),
@@ -200,34 +214,56 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'PUT' && uploadMatch) {
       if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
       const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+      const pairId = String(url.searchParams.get('pairId') || '').trim();
       const fileName = safeFileName(uploadMatch[1]);
       if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      if (!/^[A-Za-z0-9_-]{8,80}$/.test(pairId)) return json(res, 400, { error: 'valid_pairId_required' });
       if (!fileName) return json(res, 400, { error: 'invalid_file_name' });
-      if (!fileName.toLowerCase().endsWith('.djitile')) return json(res, 400, { error: 'djitile_file_required' });
-      const id = crypto.randomUUID();
-      const diskPath = path.join(prescriptionDir, `${id}-${fileName}`);
+      const fileInfo = prescriptionFileInfo(fileName);
+      if (!fileInfo) return json(res, 400, { error: 'tif_or_tfw_file_required' });
+      const pairKey = `${deviceId}:${pairId}`;
+      const pending = pendingPrescriptionPairs.get(pairKey) || { deviceId, pairId, baseName: fileInfo.baseName, files: {} };
+      if (pending.baseName !== fileInfo.baseName) return json(res, 400, {
+        error: 'prescription_base_name_mismatch', expectedBaseName: pending.baseName, actualBaseName: fileInfo.baseName
+      });
+      if (pending.files[fileInfo.extension]) return json(res, 409, { error: 'prescription_file_already_uploaded' });
+      const diskPath = path.join(prescriptionDir, `${pairId}-${fileInfo.extension}-${fileName}`);
       const received = await receiveFile(req, diskPath);
-      const record = { id, fileName, diskPath, ...received, createdAt: new Date().toISOString() };
+      pending.files[fileInfo.extension] = { fileName, diskPath, ...received };
+      pendingPrescriptionPairs.set(pairKey, pending);
+      if (!pending.files.tif || !pending.files.tfw) {
+        return json(res, 202, { pairId, baseName: pending.baseName, received: Object.keys(pending.files), waitingFor: fileInfo.extension === 'tif' ? 'tfw' : 'tif' });
+      }
+      const id = crypto.randomUUID();
+      const files = ['tif', 'tfw'].map(extension => pending.files[extension]);
+      const record = { id, baseName: pending.baseName, files, createdAt: new Date().toISOString() };
       prescriptions.set(id, record);
       fs.writeFileSync(path.join(prescriptionDir, `${id}.json`), JSON.stringify({
-        id, fileName, diskFile: path.basename(diskPath), size: record.size, sha256: record.sha256, createdAt: record.createdAt
+        id, baseName: record.baseName, files: files.map(file => ({
+          fileName: file.fileName, diskFile: path.basename(file.diskPath), size: file.size, sha256: file.sha256
+        })), createdAt: record.createdAt
       }));
+      pendingPrescriptionPairs.delete(pairKey);
       const command = enqueue(deviceId, 'DOWNLOAD_PRESCRIPTION', {
-        prescriptionId: id, fileName, size: record.size, sha256: record.sha256
+        prescriptionId: id, baseName: record.baseName,
+        files: files.map(file => ({ fileName: file.fileName, size: file.size, sha256: file.sha256 }))
       });
-      return json(res, 201, { id, fileName, size: record.size, sha256: record.sha256, commandId: command.id });
+      return json(res, 201, { id, pairId, baseName: record.baseName,
+        files: files.map(file => ({ fileName: file.fileName, size: file.size, sha256: file.sha256 })), commandId: command.id });
     }
-    const downloadMatch = url.pathname.match(/^\/api\/device\/prescriptions\/([^/]+)$/);
+    const downloadMatch = url.pathname.match(/^\/api\/device\/prescriptions\/([^/]+)\/([^/]+)$/);
     if (req.method === 'GET' && downloadMatch) {
       if (!authorizedDevice(req)) return json(res, 401, { error: 'invalid_device_token' });
       const record = prescriptions.get(decodeURIComponent(downloadMatch[1]));
-      if (!record || !fs.existsSync(record.diskPath)) return json(res, 404, { error: 'prescription_not_found' });
+      const requestedName = safeFileName(downloadMatch[2]);
+      const file = record && Array.isArray(record.files) && record.files.find(item => item.fileName === requestedName);
+      if (!file || !fs.existsSync(file.diskPath)) return json(res, 404, { error: 'prescription_file_not_found' });
       res.writeHead(200, {
-        'Content-Type': 'application/octet-stream', 'Content-Length': record.size,
-        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(record.fileName)}`,
-        'X-Content-SHA256': record.sha256
+        'Content-Type': 'application/octet-stream', 'Content-Length': file.size,
+        'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+        'X-Content-SHA256': file.sha256
       });
-      return fs.createReadStream(record.diskPath).pipe(res);
+      return fs.createReadStream(file.diskPath).pipe(res);
     }
     if (req.method === 'GET' && url.pathname === '/api/device/commands/next') {
       if (!authorizedDevice(req)) return json(res, 401, { error: 'invalid_device_token' });
@@ -264,6 +300,13 @@ const server = http.createServer(async (req, res) => {
       const payload = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload : {};
       const validationError = validateCommand(type, payload);
       if (validationError) return json(res, 400, validationError);
+      if (type === 'IMPORT_PRESCRIPTION') {
+        const device = devices.get(deviceId);
+        if (!device || !device.prescriptionImportReady) {
+          return json(res, 409, { error: 'prescription_import_not_ready',
+            message: '设备未确认 SD 卡 DJI/RX/ 中存在完整且校验通过的 TIF/TFW 文件对' });
+        }
+      }
       const command = enqueue(deviceId, type, payload);
       return json(res, 201, command);
     }

@@ -89,14 +89,6 @@
       box-shadow: var(--shadow);
     }
     .nav { padding: 10px; position: sticky; top: 16px; }
-    .tab {
-      width: 100%; margin: 0; border: 0; background: transparent;
-      color: var(--muted); text-align: left; padding: 12px 14px;
-      border-radius: 12px; cursor: pointer; font: inherit; display: flex; gap: 10px; align-items: center;
-    }
-    .tab:hover { background: #223028; color: var(--text); }
-    .tab.active { background: #24352a; color: var(--lime-2); box-shadow: inset 0 0 0 1px #3d5c3f; }
-    .tab .ico { width: 18px; opacity: .85; }
     .panel { display: none; }
     .panel.active { display: block; }
     .card { padding: 22px; }
@@ -106,7 +98,7 @@
       display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin-bottom: 16px;
     }
     label { display: block; margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 650; letter-spacing: .04em; }
-    input, select, textarea, button {
+    input, select, textarea {
       width: 100%; padding: 11px 12px; margin: 0;
       border: 1px solid var(--line-2); border-radius: 10px;
       background: #0f1613; color: var(--text); font: inherit;
@@ -116,17 +108,26 @@
     }
     textarea { min-height: 128px; font-family: var(--mono); font-size: 13px; resize: vertical; }
     button {
+      width: 100%; padding: 11px 12px; margin: 0; font: inherit;
       background: linear-gradient(180deg, #8ed63f, #62b02a);
-      color: #10200c; font-weight: 750; cursor: pointer; border: 0;
+      color: #10200c; font-weight: 750; cursor: pointer; border: 0; border-radius: 10px;
       box-shadow: inset 0 1px 0 #f3ffd4aa, 0 8px 18px #2d5a1888;
     }
     button:hover { filter: brightness(1.05); }
+    button:disabled { cursor: not-allowed; opacity: .55; filter: grayscale(.25); transform: none; }
     button:active { transform: translateY(1px); }
     button.secondary {
       background: #223028; color: var(--text);
       box-shadow: none; border: 1px solid var(--line-2);
     }
     button.ghost { background: transparent; color: var(--muted); box-shadow: none; border: 1px solid var(--line); }
+    button.tab {
+      background: transparent; color: var(--muted); text-align: left; padding: 12px 14px;
+      border-radius: 12px; box-shadow: none; font-weight: 650; display: flex; gap: 10px; align-items: center;
+    }
+    button.tab:hover { filter: none; transform: none; background: #223028; color: var(--text); }
+    button.tab.active { background: #24352a; color: var(--lime-2); box-shadow: inset 0 0 0 1px #3d5c3f; }
+    button.tab .ico { width: 18px; opacity: .85; }
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
     .actions.four { grid-template-columns: 1fr 1fr; }
     .devices { display: grid; gap: 12px; }
@@ -174,6 +175,21 @@
     .file-name { margin: 0 0 4px; color: var(--mint); font-family: var(--mono); font-size: 13px; }
     .progress { height: 6px; border-radius: 99px; background: #24332b; overflow: hidden; margin: 10px 0 0; display: none; }
     .progress > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--mint), var(--lime)); }
+    .upload-status {
+      display: none; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center;
+      margin-top: 12px; padding: 12px 14px; border-radius: 12px;
+      background: #101814; border: 1px solid #2f4939;
+    }
+    .upload-status.show { display: grid; }
+    .spinner { width: 20px; height: 20px; border: 2px solid #42604d; border-top-color: var(--lime); border-radius: 50%; animation: spin .8s linear infinite; }
+    .upload-status.done .spinner { animation: none; border: 0; display: grid; place-items: center; color: var(--ok); }
+    .upload-status.done .spinner::after { content: "✓"; font-weight: 900; }
+    .upload-status.failed .spinner { animation: none; border: 0; display: grid; place-items: center; color: var(--bad); }
+    .upload-status.failed .spinner::after { content: "!"; font-weight: 900; }
+    .upload-copy strong, .upload-copy small { display: block; }
+    .upload-copy small { color: var(--muted); margin-top: 2px; }
+    .upload-percent { color: var(--lime-2); font: 700 13px var(--mono); }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .log { padding: 18px; margin-top: 16px; }
     .log-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
     .log-head b { font-size: 14px; }
@@ -185,6 +201,8 @@
       max-height: 280px; overflow: auto; font: 12.5px/1.55 var(--mono); border: 1px solid #223028;
     }
     .history { display: grid; gap: 8px; margin-top: 12px; }
+    .history-group { display: grid; gap: 8px; padding-top: 4px; }
+    .history-title { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; padding: 4px 2px 0; }
     .cmd {
       display: grid; grid-template-columns: 92px 1fr auto; gap: 10px; align-items: center;
       padding: 10px 12px; border-radius: 10px; background: #101814; border: 1px solid #24332b;
@@ -263,23 +281,28 @@
         <section id="prescriptionPanel" class="panel">
           <div class="card">
             <h2>处方图传输</h2>
-            <p class="lead">上传只负责把文件送到遥控器公共下载目录并打开 Agras，不会开始作业。</p>
+            <p class="lead">上传会把同名文件对下发到遥控器 SD 卡 DJI/RX/，完成后可自动导航到 Agras 导入，不会开始作业。</p>
             <ol class="steps">
-              <li data-n="1">选择电脑上的处方图文件并上传。</li>
+              <li data-n="1">同时选择基础名称一致的 .tif 和 .tfw 文件。</li>
               <li data-n="2">等待设备下载命令显示成功。</li>
-              <li data-n="3">在 Agras 进入包含「导入」入口的处方图页面。</li>
-              <li data-n="4">下发选择文件并确认导入。</li>
+              <li data-n="3">等待“文件传输”记录显示成功。</li>
+              <li data-n="4">点击导入，伴随 App 自动进入处方图内存卡页面并确认。</li>
             </ol>
             <label class="drop" id="dropzone">
-              <strong>拖入文件，或点击选择处方图</strong>
-              仅支持 .djitile，最大 512 MiB
-              <input id="prescriptionFile" type="file" accept=".djitile">
+              <strong>拖入文件，或点击选择处方图文件对</strong>
+              必须同时包含同名 .tif 和 .tfw；每个文件最大 1 GiB
+              <input id="prescriptionFile" type="file" accept=".tif,.tfw" multiple>
             </label>
             <p class="file-name" id="fileName">尚未选择文件</p>
             <div class="progress" id="progress"><i id="progressBar"></i></div>
+            <div class="upload-status" id="uploadStatus" aria-live="polite">
+              <span class="spinner"></span>
+              <span class="upload-copy"><strong id="uploadTitle">等待上传</strong><small id="uploadDetail"></small></span>
+              <span class="upload-percent" id="uploadPercent">0%</span>
+            </div>
             <div class="actions">
-              <button type="button" onclick="uploadPrescription()">1. 上传并下发</button>
-              <button class="secondary" type="button" onclick="importPrescription()">2. 选择文件并确认导入</button>
+              <button id="uploadButton" type="button" onclick="uploadPrescription()">1. 上传并下发</button>
+              <button id="importButton" class="secondary" type="button" onclick="importPrescription()">2. 选择文件并确认导入</button>
             </div>
           </div>
         </section>
@@ -333,7 +356,7 @@
               <button class="ghost" type="button" onclick="clearResult()">清空</button>
             </div>
           </div>
-          <pre id="result">等待操作</pre>
+          <pre id="result">等待操作。命令记录已按文件传输、导入执行和设备控制分类。</pre>
           <div class="history" id="commandHistory"></div>
         </section>
       </main>
@@ -348,8 +371,8 @@
       if (saved.adminKey) adminKey.value = saved.adminKey;
     } catch {}
     const persist = () => localStorage.setItem('t100-console', JSON.stringify({ deviceId: deviceId.value, adminKey: adminKey.value }));
-    deviceId.addEventListener('change', persist);
-    adminKey.addEventListener('change', persist);
+    deviceId.addEventListener('input', persist);
+    adminKey.addEventListener('input', persist);
 
     document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
       document.querySelectorAll('.tab, .panel').forEach(x => x.classList.remove('active'));
@@ -378,11 +401,23 @@
       return new Date(iso).toLocaleString();
     }
     function copyResult() {
-      navigator.clipboard.writeText(result.textContent).then(() => healthText.textContent = '结果已复制').catch(() => {});
+      navigator.clipboard.writeText(result.textContent).catch(() => {});
     }
     function clearResult() {
       commandHistory.innerHTML = '';
       out('等待操作');
+    }
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+      const units = ['B', 'KiB', 'MiB', 'GiB'];
+      const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+      return (bytes / Math.pow(1024, index)).toFixed(index > 1 ? 2 : 0) + ' ' + units[index];
+    }
+    function setUploadStatus(kind, title, detail, percent) {
+      uploadStatus.className = 'upload-status show' + (kind ? ' ' + kind : '');
+      uploadTitle.textContent = title;
+      uploadDetail.textContent = detail || '';
+      uploadPercent.textContent = percent == null ? '' : Math.max(0, Math.min(100, Math.round(percent))) + '%';
     }
 
     async function api(url, options = {}) {
@@ -394,7 +429,13 @@
     async function send() {
       try {
         const body = JSON.parse($('payload').value);
-        out(await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({ deviceId: deviceId.value, type: type.value, payload: body }) }));
+        const response = await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({ deviceId: deviceId.value, type: type.value, payload: body }) });
+        if (response.status === 201) {
+          const file = body.fileName ? `\n文件：${body.fileName}` : '';
+          out(`${type.value} 已进入队列\n设备：${deviceId.value}${file}\n命令：${response.body.id}\n请在下方对应分类查看执行状态。`);
+        } else {
+          out(`${type.value} 发布失败（HTTP ${response.status}）\n${response.body && (response.body.message || response.body.error) || '未知错误'}`);
+        }
         list();
       } catch (error) { out({ error: error.message }); }
     }
@@ -403,10 +444,19 @@
       $('payload').value = JSON.stringify(commandPayload, null, 2);
       send();
     }
-    function selectedFile() { return prescriptionFile.files[0]; }
+    function selectedFiles() { return Array.from(prescriptionFile.files || []); }
+    function prescriptionPair() {
+      const files = selectedFiles();
+      const tif = files.find(file => /\.tif$/i.test(file.name));
+      const tfw = files.find(file => /\.tfw$/i.test(file.name));
+      if (files.length !== 2 || !tif || !tfw) throw new Error('必须同时选择一个 .tif 和一个 .tfw 文件');
+      const stem = name => name.replace(/\.[^.]+$/, '');
+      if (stem(tif.name) !== stem(tfw.name)) throw new Error('.tif 和 .tfw 的基础文件名必须完全一致');
+      return { tif, tfw, baseName: stem(tif.name) };
+    }
     function showFile() {
-      const file = selectedFile();
-      fileName.textContent = file ? file.name + ' · ' + (file.size / 1024 / 1024).toFixed(2) + ' MiB' : '尚未选择文件';
+      const files = selectedFiles();
+      fileName.textContent = files.length ? files.map(file => file.name + ' · ' + (file.size / 1024 / 1024).toFixed(2) + ' MiB').join(' ｜ ') : '尚未选择文件';
     }
     prescriptionFile.addEventListener('change', showFile);
     ;['dragenter','dragover'].forEach(eventName => dropzone.addEventListener(eventName, event => {
@@ -416,54 +466,118 @@
       event.preventDefault(); dropzone.classList.remove('drag');
     }));
     dropzone.addEventListener('drop', event => {
-      const file = event.dataTransfer.files[0];
-      if (!file) return;
+      const files = Array.from(event.dataTransfer.files || []);
+      if (!files.length) return;
       const transfer = new DataTransfer();
-      transfer.items.add(file);
+      files.forEach(file => transfer.items.add(file));
       prescriptionFile.files = transfer.files;
       showFile();
     });
 
     async function uploadPrescription() {
+      let timer;
       try {
-        const file = selectedFile();
-        if (!file) throw new Error('请选择处方图文件');
-        if (!file.name.toLowerCase().endsWith('.djitile')) throw new Error('仅支持 .djitile 处方图文件');
-        if (file.size > 512 * 1024 * 1024) throw new Error('文件不能超过 512 MiB');
+        const pair = prescriptionPair();
+        if ([pair.tif, pair.tfw].some(file => file.size > 1024 * 1024 * 1024)) throw new Error('每个文件不能超过 1 GiB');
+        const pairId = crypto.randomUUID();
+        uploadButton.disabled = true;
+        importButton.disabled = true;
+        prescriptionFile.disabled = true;
         progress.style.display = 'block';
-        progressBar.style.width = '8%';
-        const xhr = new XMLHttpRequest();
-        const done = new Promise((resolve, reject) => {
-          xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText ? JSON.parse(xhr.responseText) : null });
-          xhr.onerror = () => reject(new Error('网络错误'));
-        });
-        xhr.upload.onprogress = event => {
-          if (event.lengthComputable) progressBar.style.width = Math.max(8, Math.round(event.loaded / event.total * 100)) + '%';
-        };
-        xhr.open('PUT', '/api/admin/prescriptions/' + encodeURIComponent(file.name) + '?deviceId=' + encodeURIComponent(deviceId.value));
-        xhr.setRequestHeader('X-Admin-Key', adminKey.value);
-        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-        xhr.send(file);
-        const response = await done;
+        progressBar.style.width = '0%';
+        const total = pair.tif.size + pair.tfw.size;
+        let completed = 0;
+        let currentLoaded = 0;
+        const startedAt = Date.now();
+        let response;
+        timer = setInterval(() => {
+          const loaded = completed + currentLoaded;
+          const seconds = Math.max(1, (Date.now() - startedAt) / 1000);
+          const percent = total ? loaded / total * 100 : 0;
+          uploadDetail.textContent = `${formatBytes(loaded)} / ${formatBytes(total)} · 平均 ${formatBytes(loaded / seconds)}/s`;
+          uploadPercent.textContent = Math.round(percent) + '%';
+        }, 500);
+        const pairFiles = [pair.tif, pair.tfw];
+        for (let index = 0; index < pairFiles.length; index++) {
+          const file = pairFiles[index];
+          currentLoaded = 0;
+          setUploadStatus('', `正在上传 ${index + 1}/2：${file.name}`,
+            `${formatBytes(completed)} / ${formatBytes(total)}`, total ? completed / total * 100 : 0);
+          const xhr = new XMLHttpRequest();
+          const done = new Promise((resolve, reject) => {
+            xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText ? JSON.parse(xhr.responseText) : null });
+            xhr.onerror = () => reject(new Error('网络错误'));
+          });
+          xhr.upload.onprogress = event => {
+            currentLoaded = event.loaded;
+            if (event.lengthComputable) {
+              const percent = (completed + event.loaded) / total * 100;
+              progressBar.style.width = Math.max(2, percent) + '%';
+            }
+          };
+          xhr.upload.onload = () => setUploadStatus('', `文件已发送，正在校验 ${index + 1}/2：${file.name}`,
+            '请保持页面打开，服务端正在计算 SHA-256 并写入存储', (completed + file.size) / total * 100);
+          xhr.open('PUT', '/api/admin/prescriptions/' + encodeURIComponent(file.name) + '?deviceId=' + encodeURIComponent(deviceId.value) + '&pairId=' + encodeURIComponent(pairId));
+          xhr.setRequestHeader('X-Admin-Key', adminKey.value);
+          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          xhr.send(file);
+          response = await done;
+          if (response.status !== 201 && response.status !== 202) throw new Error((response.body && response.body.error) || ('上传失败 HTTP ' + response.status));
+          completed += file.size;
+          currentLoaded = 0;
+        }
+        clearInterval(timer);
         progressBar.style.width = '100%';
-        out(response);
+        setUploadStatus('done', '两个文件上传完成，下载命令已下发',
+          `${pair.tif.name} + ${pair.tfw.name} · 共 ${formatBytes(total)}`, 100);
+        out(`文件传输已排队\n处方图：${pair.baseName}\n设备：${deviceId.value}\n命令：${response.body && response.body.commandId ? response.body.commandId : '-'}\n下一步：等待“文件传输”记录显示成功后执行导入。`);
         if (response.status === 201) list();
-      } catch (error) { out({ error: error.message }); }
+      } catch (error) {
+        clearInterval(timer);
+        setUploadStatus('failed', '上传失败', error.message, null);
+        out(`文件上传失败\n${error.message}`);
+      } finally {
+        uploadButton.disabled = false;
+        importButton.disabled = false;
+        prescriptionFile.disabled = false;
+      }
     }
     function importPrescription() {
-      const file = selectedFile();
-      if (!file) return out({ error: '请选择与已上传文件相同的文件' });
-      quick('IMPORT_PRESCRIPTION', { fileName: file.name, entryText: '导入', source: 'dji', unit: 'mu', resample: 'max', timeoutMs: 15000 });
+      try {
+        const pair = prescriptionPair();
+        quick('IMPORT_PRESCRIPTION', { fileName: pair.tif.name, entryText: '导入', source: 'dji', unit: 'mu', resample: 'average', timeoutMs: 15000 });
+      } catch (error) { out({ error: error.message }); }
     }
     function renderHistory(items) {
-      commandHistory.innerHTML = (items || []).slice(0, 8).map(item =>
-        `<div class="cmd"><span class="type">${escapeHtml(item.type)}</span><span class="msg">${escapeHtml(item.message || item.status || '')} · ${escapeHtml(ago(item.createdAt))}</span><span class="status ${escapeHtml(item.status || '')}">${escapeHtml(item.status || '')}</span></div>`
-      ).join('');
+      const definitions = [
+        { title: '文件传输', types: ['DOWNLOAD_PRESCRIPTION'] },
+        { title: '导入执行', types: ['IMPORT_PRESCRIPTION'] },
+        { title: '设备控制与调试', types: null }
+      ];
+      const values = [...(items || [])].sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0)).slice(0, 30);
+      const statusName = { QUEUED: '等待设备', DELIVERED: '执行中', SUCCEEDED: '成功', FAILED: '失败' };
+      const groups = definitions.map(group => ({
+        ...group,
+        rows: values.filter(item => group.types ? group.types.includes(item.type)
+          : !['DOWNLOAD_PRESCRIPTION', 'IMPORT_PRESCRIPTION'].includes(item.type))
+          .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
+      })).filter(group => group.rows.length)
+        .sort((a, b) => Date.parse(b.rows[0].createdAt || 0) - Date.parse(a.rows[0].createdAt || 0));
+      commandHistory.innerHTML = groups.map(group => {
+        const rows = group.rows;
+        return `<section class="history-group"><div class="history-title"><b>${group.title}</b><span>${rows.length} 条</span></div>${rows.map(item => {
+          const file = item.payload && (item.payload.fileName || item.payload.baseName);
+          const label = item.type === 'DOWNLOAD_PRESCRIPTION' ? '下载到遥控器'
+            : item.type === 'IMPORT_PRESCRIPTION' ? '导入 Agras' : item.type;
+          const detail = [file, item.message || statusName[item.status] || item.status, new Date(item.createdAt).toLocaleString()].filter(Boolean).join(' · ');
+          return `<div class="cmd" title="${escapeHtml(detail)}"><span class="type">${escapeHtml(label)}</span><span class="msg">${escapeHtml(detail)}</span><span class="status ${escapeHtml(item.status || '')}">${escapeHtml(statusName[item.status] || item.status || '')}</span></div>`;
+        }).join('')}</section>`;
+      }).join('') || '<div class="empty">暂无操作记录</div>';
     }
     async function list() {
       const response = await api('/api/admin/commands?deviceId=' + encodeURIComponent(deviceId.value));
-      out(response);
-      renderHistory(response.body && response.body.items);
+      if (response.status === 200) renderHistory(response.body && response.body.items);
+      else out(`读取命令记录失败：HTTP ${response.status}`);
     }
     async function loadDevices() {
       try {
@@ -483,6 +597,8 @@
               <div class="metric"><span>前台服务</span><strong class="${device.foregroundService ? 'ok' : 'bad'}">${device.foregroundService ? '运行中' : '未确认'}</strong></div>
               <div class="metric"><span>无障碍</span><strong class="${device.accessibilityEnabled ? 'ok' : 'bad'}">${device.accessibilityEnabled ? '已开启' : '未开启'}</strong></div>
               <div class="metric"><span>Agras</span><strong>${device.agrasInstalled ? '已安装' : '未确认'}</strong></div>
+              <div class="metric"><span>SD 卡</span><strong class="${device.sdCardStatusReported && device.sdCardInserted ? 'ok' : 'bad'}">${!device.sdCardStatusReported ? '旧版未上报' : (device.sdCardInserted ? (device.sdCardWritable ? '已插入且可写' : '已插入但不可写') : '确认未插入')}</strong></div>
+              <div class="metric"><span>处方图导入</span><strong class="${device.prescriptionImportReady ? 'ok' : 'bad'}">${device.prescriptionImportReady ? '已就绪' : '不可执行'}</strong></div>
             </div>
             <div class="meta">心跳 ${escapeHtml(ago(device.lastSeen))} · Android ${escapeHtml(device.androidVersion || '-')} · App ${escapeHtml(device.companionVersion || '-')} · ${escapeHtml(device.remoteAddress || '')}</div>
           </article>`).join('') : '<div class="empty">暂无设备心跳。请确认伴随 App 已连接本机局域网地址。</div>';
@@ -504,6 +620,7 @@
     ping();
     loadDevices();
     setInterval(() => { if (devicePanel.classList.contains('active')) loadDevices(); }, 5000);
+    setInterval(() => { if (prescriptionPanel.classList.contains('active') || recordPanel.classList.contains('active')) list(); }, 3000);
     setInterval(ping, 15000);
   </script>
 </body>

@@ -49,24 +49,24 @@ OpenAPI 文档：`http://127.0.0.1:8787/openapi.json`。
 
 ## 上传处方图
 
-网页控制台可直接选择 `.djitile` 处方图并下发。接口使用原始二进制请求体，最大 512 MiB；服务端和 Android 均流式处理，适合 300 多 MiB 的文件：
+网页控制台必须同时选择一个 `.tif` 和一个 `.tfw` 文件。两者扩展名前的基础名称必须完全一致（扩展名大小写不敏感）。每个文件最大 1 GiB；服务端和 Android 均流式处理：
 
 ```http
-PUT /api/admin/prescriptions/prescription.djitile?deviceId=rc-t100-001
+PUT /api/admin/prescriptions/prescription.tif?deviceId=rc-t100-001&pairId=upload-001
 X-Admin-Key: <admin-key>
 Content-Type: application/octet-stream
 
-<文件内容>
+<TIF 文件内容>
 ```
 
-服务端会计算 SHA-256 并创建 `DOWNLOAD_PRESCRIPTION` 设备命令。Android 10 及以上把通过校验的文件保存到公共目录 `Download/DJI-Prescriptions`，然后启动 DJI Agras。文件下载不等于开始作业；进入导入页面、选择文件和导入参数使用页面检查与安全导航命令完成，任务执行仍被拦截。
+再使用相同的 `deviceId` 和 `pairId` 上传 `prescription.tfw`。第一份返回 `202`，服务端收到并验证完整文件对后返回 `201`，计算两份文件各自的 SHA-256 并创建一条 `DOWNLOAD_PRESCRIPTION` 命令。遥控器插有可写 SD 卡时，伴随 App 把两份文件保存到 SD 卡根目录 `DJI/RX/`，校验完成后才允许导入；未插卡时只保存到遥控器内部 `Download/DJI-Prescriptions/`，并拒绝执行 `IMPORT_PRESCRIPTION`。文件下载不等于开始作业；任务执行仍被拦截。
 
 在 Agras 已显示包含“导入”入口的处方图页面时，可下发：
 
 ```json
-{"deviceId":"rc-t100-001","type":"IMPORT_PRESCRIPTION","payload":{"fileName":"prescription.djitile","entryText":"导入","source":"dji","unit":"mu","resample":"max","timeoutMs":15000}}
+{"deviceId":"rc-t100-001","type":"IMPORT_PRESCRIPTION","payload":{"fileName":"prescription.tif","entryText":"导入","source":"dji","unit":"mu","resample":"average","timeoutMs":15000}}
 ```
 
-伴随 App 只会在 Agras 或系统文件选择器中按指定文件名操作，并按资源 ID 设置导入参数。如果页面结构不匹配则立即失败，不使用坐标猜测。该命令确认的是文件导入，不会上传航线到飞行器，也不会开始任务。
+伴随 App 会自动进入 Agras 的“处方图 → 内存卡”页面，按文件名勾选目标文件；导入设置弹窗出现后只选择“平均值”并点击“确定”，不会修改来源和面积单位。如果页面结构不匹配则立即失败，不使用坐标猜测。该命令确认的是文件导入，不会上传航线到飞行器，也不会开始任务。
 
 > 当前队列只保存在内存中，服务重启后清空，仅用于局域网原型验证。
