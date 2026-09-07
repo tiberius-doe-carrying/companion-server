@@ -17,6 +17,7 @@ const HOST = process.env.T100_HOST || fileConfig.host || '0.0.0.0';
 const PORT = Number(process.env.T100_PORT || fileConfig.port || 8787);
 const DEVICE_TOKEN = process.env.T100_DEVICE_TOKEN || fileConfig.deviceToken || 'change-device-token';
 const ADMIN_KEY = process.env.T100_ADMIN_KEY || fileConfig.adminKey || 'change-admin-key';
+const LOCAL_ADMIN_SESSION = crypto.randomBytes(32).toString('hex');
 const MAX_BODY = 128 * 1024;
 const MAX_PRESCRIPTION_FILE = 1024 * 1024 * 1024;
 const prescriptionDir = path.join(__dirname, 'data', 'prescriptions');
@@ -24,6 +25,8 @@ fs.mkdirSync(prescriptionDir, { recursive: true });
 const commands = new Map();
 const queues = new Map();
 const devices = new Map();
+const inventories = new Map();
+const jobBindings = new Map();
 const prescriptions = new Map();
 const pendingPrescriptionPairs = new Map();
 for (const name of fs.readdirSync(prescriptionDir).filter(value => value.endsWith('.json'))) {
@@ -39,7 +42,8 @@ for (const name of fs.readdirSync(prescriptionDir).filter(value => value.endsWit
   } catch { }
 }
 const ALLOWED_TYPES = new Set(['OPEN_DJI', 'OPEN_AGRAS', 'OPEN_APP', 'OPEN_DEEPLINK', 'INSPECT_PAGE',
-  'CLICK_TEXT', 'CLICK_ID', 'CLICK_RATIO', 'WAIT_PAGE', 'BACK', 'DOWNLOAD_PRESCRIPTION', 'IMPORT_PRESCRIPTION']);
+  'CLICK_TEXT', 'CLICK_ID', 'CLICK_RATIO', 'WAIT_PAGE', 'BACK', 'DOWNLOAD_PRESCRIPTION', 'IMPORT_PRESCRIPTION',
+  'READ_AGRAS_INVENTORY', 'PREPARE_AGRAS_JOB']);
 const BLOCKED_TERMS = ['锁定', '解锁', '起飞', '开始任务', '执行任务', '返航', '降落', '紧急停止',
   '喷洒', '播撒', '转让', '删除', 'lock', 'unlock', 'takeoff', 'take_off', 'startmission',
   'start_mission', 'returntohome', 'return_to_home', 'landing', 'land', 'emergencystop',
@@ -64,6 +68,10 @@ function validateCommand(type, payload) {
     if (payload.source != null && !['dji', 'other'].includes(String(payload.source).toLowerCase())) return { error: 'unsupported_prescription_source' };
     if (payload.unit != null && !['mu', 'ha'].includes(String(payload.unit).toLowerCase())) return { error: 'unsupported_area_unit' };
     if (payload.resample != null && !['max', 'average'].includes(String(payload.resample).toLowerCase())) return { error: 'unsupported_resample_type' };
+  }
+  if (type === 'PREPARE_AGRAS_JOB') {
+    if (!String(payload.jobName || '').trim()) return { error: 'jobName_required' };
+    if (!String(payload.prescriptionName || '').trim()) return { error: 'prescriptionName_required' };
   }
   return null;
 }
@@ -90,7 +98,14 @@ function authorizedDevice(req) {
 }
 
 function authorizedAdmin(req) {
-  return req.headers['x-admin-key'] === ADMIN_KEY;
+  if (req.headers['x-admin-key'] === ADMIN_KEY) return true;
+  const cookies = String(req.headers.cookie || '').split(';').map(value => value.trim());
+  return cookies.includes(`t100_local_admin=${LOCAL_ADMIN_SESSION}`);
+}
+
+function isLoopbackRequest(req) {
+  const address = String(req.socket.remoteAddress || '').toLowerCase();
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 async function readJson(req) {
@@ -169,12 +184,28 @@ function deviceView(record) {
   return { ...record, online: Number.isFinite(lastSeenMs) && Date.now() - lastSeenMs <= 15000 };
 }
 
+function inventoryItems(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 500).map(item => {
+    if (typeof item === 'string') return { name: item.trim().slice(0, 180) };
+    return {
+      id: String(item && item.id || '').slice(0, 180),
+      name: String(item && item.name || '').trim().slice(0, 180),
+      area: String(item && item.area || '').slice(0, 80),
+      updatedAt: String(item && item.updatedAt || '').slice(0, 80)
+    };
+  }).filter(item => item.name);
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
     if (req.method === 'GET' && url.pathname === '/') {
       const html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+      if (isLoopbackRequest(req)) {
+        res.setHeader('Set-Cookie', `t100_local_admin=${LOCAL_ADMIN_SESSION}; HttpOnly; SameSite=Strict; Path=/`);
+      }
       return text(res, 200, html, 'text/html; charset=utf-8');
     }
     if (req.method === 'GET' && url.pathname === '/openapi.json') {
@@ -193,6 +224,7 @@ const server = http.createServer(async (req, res) => {
         deviceId, lastSeen: new Date().toISOString(),
         foregroundService: Boolean(body.foregroundService),
         accessibilityEnabled: Boolean(body.accessibilityEnabled),
+        accessibilityConnected: Boolean(body.accessibilityConnected),
         sdCardStatusReported: typeof body.sdCardInserted === 'boolean',
         sdCardInserted: Boolean(body.sdCardInserted),
         sdCardWritable: Boolean(body.sdCardWritable),
@@ -205,10 +237,46 @@ const server = http.createServer(async (req, res) => {
       devices.set(deviceId, record);
       return json(res, 200, deviceView(record));
     }
+    if (req.method === 'POST' && url.pathname === '/api/device/agras-inventory') {
+      if (!authorizedDevice(req)) return json(res, 401, { error: 'invalid_device_token' });
+      const body = await readJson(req);
+      const deviceId = String(body.deviceId || '').trim();
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      const record = { deviceId, jobs: inventoryItems(body.jobs), prescriptions: inventoryItems(body.prescriptions),
+        updatedAt: new Date().toISOString() };
+      inventories.set(deviceId, record);
+      return json(res, 200, record);
+    }
     if (req.method === 'GET' && url.pathname === '/api/admin/devices') {
       if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
       const items = [...devices.values()].map(deviceView).sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
       return json(res, 200, { items, onlineTimeoutSeconds: 15 });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/agras-inventory') {
+      if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
+      const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      return json(res, 200, inventories.get(deviceId) || { deviceId, jobs: [], prescriptions: [], updatedAt: null });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/job-bindings') {
+      if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
+      const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+      const items = [...jobBindings.values()].filter(item => !deviceId || item.deviceId === deviceId)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      return json(res, 200, { items });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/admin/job-bindings') {
+      if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
+      const body = await readJson(req);
+      const deviceId = String(body.deviceId || '').trim();
+      const jobName = String(body.jobName || '').trim();
+      const prescriptionName = String(body.prescriptionName || '').trim();
+      if (!deviceId || !jobName || !prescriptionName) return json(res, 400, { error: 'deviceId_jobName_prescriptionName_required' });
+      const id = String(body.id || crypto.randomUUID());
+      const record = { id, deviceId, jobName: jobName.slice(0, 180), prescriptionName: prescriptionName.slice(0, 180),
+        status: 'SAVED', updatedAt: new Date().toISOString() };
+      jobBindings.set(id, record);
+      return json(res, 201, record);
     }
     const uploadMatch = url.pathname.match(/^\/api\/admin\/prescriptions\/([^/]+)$/);
     if (req.method === 'PUT' && uploadMatch) {
@@ -305,6 +373,20 @@ const server = http.createServer(async (req, res) => {
         if (!device || !device.prescriptionImportReady) {
           return json(res, 409, { error: 'prescription_import_not_ready',
             message: '设备未确认 SD 卡 DJI/RX/ 中存在完整且校验通过的 TIF/TFW 文件对' });
+        }
+      }
+      if (type === 'PREPARE_AGRAS_JOB') {
+        const inventory = inventories.get(deviceId);
+        const jobName = String(payload.jobName || '').trim();
+        const prescriptionName = String(payload.prescriptionName || '').trim();
+        if (!inventory || !inventory.updatedAt) {
+          return json(res, 409, { error: 'agras_inventory_required', message: '请先从遥控器同步作业和处方图列表' });
+        }
+        if (!inventory.jobs.some(item => item.name === jobName)) {
+          return json(res, 409, { error: 'job_not_in_inventory', message: `同步清单中不存在作业：${jobName}` });
+        }
+        if (!inventory.prescriptions.some(item => item.name === prescriptionName)) {
+          return json(res, 409, { error: 'prescription_not_in_inventory', message: `同步清单中不存在处方图：${prescriptionName}` });
         }
       }
       const command = enqueue(deviceId, type, payload);

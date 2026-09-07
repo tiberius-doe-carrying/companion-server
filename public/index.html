@@ -130,6 +130,8 @@
     button.tab .ico { width: 18px; opacity: .85; }
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
     .actions.four { grid-template-columns: 1fr 1fr; }
+    .picker-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .binding-list { display: grid; gap: 8px; margin-top: 14px; }
     .devices { display: grid; gap: 12px; }
     .empty {
       padding: 28px 16px; text-align: center; color: var(--muted);
@@ -216,7 +218,7 @@
     .status.FAILED { color: var(--bad); }
     .hint { margin-top: 10px; color: var(--faint); font-size: 12px; }
     @media (max-width: 860px) {
-      .layout, .session, .metrics, .actions, .actions.four { grid-template-columns: 1fr; }
+      .layout, .session, .metrics, .actions, .actions.four, .picker-grid { grid-template-columns: 1fr; }
       .nav { position: static; display: grid; grid-template-columns: 1fr 1fr; }
       .cmd { grid-template-columns: 1fr auto; }
       .cmd .type { grid-column: 1 / -1; }
@@ -245,11 +247,12 @@
     <div class="session card">
       <div>
         <label for="deviceId">当前设备编号</label>
-        <input id="deviceId" value="rc-t100-001" autocomplete="off">
+        <input id="deviceId" list="deviceOptions" placeholder="输入或选择已连接设备" autocomplete="off">
+        <datalist id="deviceOptions"></datalist>
       </div>
       <div>
-        <label for="adminKey">管理密钥</label>
-        <input id="adminKey" type="password" value="change-admin-key" autocomplete="off">
+        <label for="adminKey">管理密钥（远程访问时填写）</label>
+        <input id="adminKey" type="password" placeholder="本机打开无需填写" autocomplete="off">
       </div>
       <div>
         <label>&nbsp;</label>
@@ -261,6 +264,7 @@
       <nav class="nav">
         <button class="tab active" data-panel="devicePanel"><span class="ico">▣</span>设备状态</button>
         <button class="tab" data-panel="prescriptionPanel"><span class="ico">▤</span>处方图</button>
+        <button class="tab" data-panel="jobPanel"><span class="ico">◎</span>作业准备</button>
         <button class="tab" data-panel="controlPanel"><span class="ico">✈</span>DJI 控制</button>
         <button class="tab" data-panel="recordPanel"><span class="ico">{ }</span>记录与调试</button>
       </nav>
@@ -304,6 +308,25 @@
               <button id="uploadButton" type="button" onclick="uploadPrescription()">1. 上传并下发</button>
               <button id="importButton" class="secondary" type="button" onclick="importPrescription()">2. 选择文件并确认导入</button>
             </div>
+          </div>
+        </section>
+
+        <section id="jobPanel" class="panel">
+          <div class="card">
+            <h2>处方图作业准备</h2>
+            <p class="lead">从遥控器读取 Agras 作业和已导入处方图，保存两者关联。这里只准备作业，不会开始任务或起飞。</p>
+            <div class="picker-grid">
+              <div><label for="jobName">作业 / 地块</label><select id="jobName"><option value="">请选择作业</option></select></div>
+              <div><label for="prescriptionName">已导入处方图</label><select id="prescriptionName"><option value="">请选择处方图</option></select></div>
+            </div>
+            <p class="hint" id="inventoryStatus">尚未读取遥控器清单。</p>
+            <div class="actions">
+              <button type="button" onclick="requestInventory()">从遥控器同步列表</button>
+              <button class="secondary" type="button" onclick="loadInventory()">刷新已上报列表</button>
+              <button type="button" onclick="saveBinding()">保存作业与处方图关联</button>
+              <button type="button" onclick="prepareJob()">准备作业</button>
+            </div>
+            <div class="binding-list" id="bindingList"><div class="empty">尚未保存关联</div></div>
           </div>
         </section>
 
@@ -379,6 +402,7 @@
       tab.classList.add('active');
       $(tab.dataset.panel).classList.add('active');
       if (tab.dataset.panel === 'devicePanel') loadDevices();
+      if (tab.dataset.panel === 'jobPanel') { loadInventory(); loadBindings(); }
       if (tab.dataset.panel === 'recordPanel') list();
     });
 
@@ -443,6 +467,113 @@
       type.value = commandType;
       $('payload').value = JSON.stringify(commandPayload, null, 2);
       send();
+    }
+    async function requestInventory() {
+      if (!deviceId.value.trim()) return out('请先选择设备');
+      const requestedDevice = deviceId.value.trim();
+      inventoryStatus.textContent = '正在向遥控器发送清单读取命令…';
+      const response = await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({
+        deviceId: requestedDevice, type: 'READ_AGRAS_INVENTORY', payload: {}
+      }) });
+      if (response.status === 201) {
+        inventoryStatus.textContent = '遥控器正在打开 Agras 并读取列表，请稍候…';
+        out(`清单同步命令已排队\n设备：${requestedDevice}\n命令：${response.body.id}`);
+        await waitForInventoryCommand(response.body.id, requestedDevice);
+      } else out(`清单同步失败：${response.body && (response.body.message || response.body.error) || response.status}`);
+    }
+    async function waitForInventoryCommand(commandId, requestedDevice) {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const response = await api('/api/admin/commands/' + encodeURIComponent(commandId));
+        const command = response.body || {};
+        if (response.status !== 200) continue;
+        if (command.status === 'SUCCEEDED') {
+          if (deviceId.value.trim() === requestedDevice) await loadInventory();
+          jobName.value = '';
+          prescriptionName.value = '';
+          out(`清单同步成功\n设备：${requestedDevice}\n${command.message || ''}`);
+          list();
+          return;
+        }
+        if (command.status === 'FAILED') {
+          inventoryStatus.textContent = '清单同步失败：' + (command.message || '未知错误');
+          out(`清单同步失败\n设备：${requestedDevice}\n${command.message || '未知错误'}`);
+          list();
+          return;
+        }
+        inventoryStatus.textContent = command.status === 'DELIVERED'
+          ? '遥控器正在读取 Agras 列表…'
+          : '命令已排队，等待遥控器接收…';
+      }
+      inventoryStatus.textContent = '同步仍在进行，可稍后点击“刷新已上报列表”查看。';
+    }
+    async function loadInventory() {
+      if (!deviceId.value.trim()) return;
+      const response = await api('/api/admin/agras-inventory?deviceId=' + encodeURIComponent(deviceId.value.trim()));
+      if (response.status !== 200) return inventoryStatus.textContent = '读取清单失败：HTTP ' + response.status;
+      const data = response.body || {};
+      jobName.innerHTML = '<option value="">请选择作业</option>' + (data.jobs || []).map(item => `<option value="${escapeHtml(item.name)}">${escapeHtml([item.name, item.area, item.updatedAt].filter(Boolean).join(' · '))}</option>`).join('');
+      prescriptionName.innerHTML = '<option value="">请选择处方图</option>' + (data.prescriptions || []).map(item => `<option value="${escapeHtml(item.name)}">${escapeHtml([item.name, item.area, item.updatedAt].filter(Boolean).join(' · '))}</option>`).join('');
+      inventoryStatus.textContent = data.updatedAt ? `最近同步：${new Date(data.updatedAt).toLocaleString()} · 作业 ${(data.jobs || []).length} 个 · 处方图 ${(data.prescriptions || []).length} 个`
+        : '该设备尚未上报清单；需要新版伴随 App 支持 READ_AGRAS_INVENTORY。';
+    }
+    async function saveBinding() {
+      const body = { deviceId: deviceId.value.trim(), jobName: jobName.value.trim(), prescriptionName: prescriptionName.value.trim() };
+      if (!body.deviceId || !body.jobName || !body.prescriptionName) return out('请选择设备，并填写作业和处方图');
+      const response = await api('/api/admin/job-bindings', { method: 'POST', body: JSON.stringify(body) });
+      if (response.status === 201) { out(`关联已保存\n作业：${body.jobName}\n处方图：${body.prescriptionName}\n状态：等待验证`); loadBindings(); }
+      else out(`保存关联失败：${response.body && (response.body.message || response.body.error) || response.status}`);
+    }
+    async function prepareJob() {
+      const requestedDevice = deviceId.value.trim();
+      const requestedJob = jobName.value.trim();
+      const requestedPrescription = prescriptionName.value.trim();
+      if (!requestedDevice || !requestedJob || !requestedPrescription) return out('请选择设备、作业和处方图');
+      inventoryStatus.textContent = '正在向遥控器发送作业准备命令…';
+      const response = await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({
+        deviceId: requestedDevice,
+        type: 'PREPARE_AGRAS_JOB',
+        payload: { jobName: requestedJob, prescriptionName: requestedPrescription }
+      }) });
+      if (response.status !== 201) {
+        const message = response.body && (response.body.message || response.body.error) || response.status;
+        inventoryStatus.textContent = '作业准备失败：' + message;
+        return out('作业准备失败：' + message);
+      }
+      inventoryStatus.textContent = '遥控器正在打开作业并选择处方图，请稍候…';
+      out(`作业准备命令已排队\n设备：${requestedDevice}\n作业：${requestedJob}\n处方图：${requestedPrescription}\n命令：${response.body.id}`);
+      await waitForJobCommand(response.body.id, requestedDevice, requestedJob, requestedPrescription);
+    }
+    async function waitForJobCommand(commandId, requestedDevice, requestedJob, requestedPrescription) {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const response = await api('/api/admin/commands/' + encodeURIComponent(commandId));
+        const command = response.body || {};
+        if (response.status !== 200) continue;
+        if (command.status === 'SUCCEEDED') {
+          inventoryStatus.textContent = `已准备：${requestedJob} → ${requestedPrescription}。请在遥控器核对航线并现场确认执行。`;
+          out(`作业准备成功\n设备：${requestedDevice}\n${command.message || ''}`);
+          list();
+          return;
+        }
+        if (command.status === 'FAILED') {
+          inventoryStatus.textContent = '作业准备失败：' + (command.message || '未知错误');
+          out(`作业准备失败\n设备：${requestedDevice}\n${command.message || '未知错误'}`);
+          list();
+          return;
+        }
+        inventoryStatus.textContent = command.status === 'DELIVERED'
+          ? '遥控器正在选择作业和处方图…'
+          : '命令已排队，等待遥控器接收…';
+      }
+      inventoryStatus.textContent = '作业准备仍在进行，可在执行记录中查看结果。';
+    }
+    async function loadBindings() {
+      if (!deviceId.value.trim()) return;
+      const response = await api('/api/admin/job-bindings?deviceId=' + encodeURIComponent(deviceId.value.trim()));
+      const items = response.status === 200 && response.body ? response.body.items || [] : [];
+      bindingList.innerHTML = items.length ? items.map(item => `<div class="metric"><span>${escapeHtml(new Date(item.updatedAt).toLocaleString())}</span><strong>${escapeHtml(item.jobName)} → ${escapeHtml(item.prescriptionName)}</strong></div>`).join('')
+        : '<div class="empty">尚未保存关联</div>';
     }
     function selectedFiles() { return Array.from(prescriptionFile.files || []); }
     function prescriptionPair() {
@@ -587,6 +718,13 @@
           return;
         }
         const items = response.body.items || [];
+        const choices = [...items].sort((a, b) => Number(b.online) - Number(a.online)
+          || String(b.lastSeen || '').localeCompare(String(a.lastSeen || '')));
+        deviceOptions.innerHTML = choices.map(device => `<option value="${escapeHtml(device.deviceId)}">${device.online ? '在线' : '离线'} · ${escapeHtml(ago(device.lastSeen))}</option>`).join('');
+        if (!deviceId.value && choices.length) {
+          deviceId.value = choices[0].deviceId;
+          persist();
+        }
         devices.innerHTML = items.length ? items.map(device => `
           <article class="device">
             <div class="head">
@@ -595,7 +733,7 @@
             </div>
             <div class="metrics">
               <div class="metric"><span>前台服务</span><strong class="${device.foregroundService ? 'ok' : 'bad'}">${device.foregroundService ? '运行中' : '未确认'}</strong></div>
-              <div class="metric"><span>无障碍</span><strong class="${device.accessibilityEnabled ? 'ok' : 'bad'}">${device.accessibilityEnabled ? '已开启' : '未开启'}</strong></div>
+              <div class="metric"><span>无障碍</span><strong class="${device.accessibilityEnabled && device.accessibilityConnected ? 'ok' : 'bad'}">${!device.accessibilityEnabled ? '未授权' : (device.accessibilityConnected ? '已开启并运行' : '已授权但未运行')}</strong></div>
               <div class="metric"><span>Agras</span><strong>${device.agrasInstalled ? '已安装' : '未确认'}</strong></div>
               <div class="metric"><span>SD 卡</span><strong class="${device.sdCardStatusReported && device.sdCardInserted ? 'ok' : 'bad'}">${!device.sdCardStatusReported ? '旧版未上报' : (device.sdCardInserted ? (device.sdCardWritable ? '已插入且可写' : '已插入但不可写') : '确认未插入')}</strong></div>
               <div class="metric"><span>处方图导入</span><strong class="${device.prescriptionImportReady ? 'ok' : 'bad'}">${device.prescriptionImportReady ? '已就绪' : '不可执行'}</strong></div>
