@@ -217,6 +217,16 @@
     .status.SUCCEEDED { color: var(--ok); }
     .status.FAILED { color: var(--bad); }
     .hint { margin-top: 10px; color: var(--faint); font-size: 12px; }
+    #rtkMap {
+      width: 100%;
+      height: 420px;
+      border-radius: 16px;
+      overflow: hidden;
+      margin-top: 10px;
+      background: #0d1a22;
+      border: 1px solid #24332b;
+    }
+    #rtkMap .empty { margin: 0; height: 100%; display: grid; place-items: center; border: 0; }
     @media (max-width: 860px) {
       .layout, .session, .metrics, .actions, .actions.four, .picker-grid { grid-template-columns: 1fr; }
       .nav { position: static; display: grid; grid-template-columns: 1fr 1fr; }
@@ -351,7 +361,11 @@
           </div>
           <div class="card">
             <h2>RTK 经纬度读取记录</h2>
-            <p class="lead" id="rtkReadStatus">开始后会连续读取飞行器经纬度、海拔和航向角；点击停止后不再发送新的读取命令。</p>
+            <p class="lead" id="rtkReadStatus">开始后会连续读取飞行器经纬度、海拔和航向角，并在天地图上绘制飞行轨迹；点击停止后不再发送新的读取命令。</p>
+            <p class="hint" id="rtkMapMeta">点击“开始连续读取 RTK”后，会把飞行器坐标画在天地图上。</p>
+            <div id="rtkMap" role="img" aria-label="RTK 天地图轨迹">
+              <div class="empty">等待连续读取后展示天地图轨迹</div>
+            </div>
             <div class="history" id="rtkReadingList"><div class="empty">暂无 RTK 读取记录</div></div>
           </div>
           <div class="card">
@@ -414,6 +428,7 @@
   </div>
   <script>
     const $ = id => document.getElementById(id);
+    const TIANDITU_KEY = '8ea1273bc39c66e1e9c4f0a4b1568f22';
     const state = { lastResult: '等待操作' };
     try {
       const saved = JSON.parse(localStorage.getItem('t100-console') || '{}');
@@ -430,7 +445,7 @@
       $(tab.dataset.panel).classList.add('active');
       if (tab.dataset.panel === 'devicePanel') loadDevices();
       if (tab.dataset.panel === 'jobPanel') { loadInventory(); loadBindings(); }
-      if (tab.dataset.panel === 'controlPanel') { loadRtkReadings(); loadScreenshot(); }
+      if (tab.dataset.panel === 'controlPanel') { loadRtkReadings(); loadScreenshot(); resizeRtkMap(); }
       if (tab.dataset.panel === 'recordPanel') list();
     });
 
@@ -578,6 +593,100 @@
     let rtkMonitoring = false;
     let rtkMonitoringDevice = '';
     let rtkStopRequested = false;
+    const rtkMapState = { map: null, polyline: null, marker: null, points: [], lastKey: '', loading: null };
+
+    function loadTiandituApi() {
+      if (window.T && window.T.Map) return Promise.resolve();
+      if (rtkMapState.loading) return rtkMapState.loading;
+      rtkMapState.loading = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://api.tianditu.gov.cn/api?v=4.0&tk=' + encodeURIComponent(TIANDITU_KEY);
+        script.async = true;
+        script.onload = () => window.T && window.T.Map ? resolve() : reject(new Error('天地图 API 未就绪'));
+        script.onerror = () => reject(new Error('天地图脚本加载失败，请检查网络和密钥'));
+        document.head.appendChild(script);
+      });
+      return rtkMapState.loading;
+    }
+    function planeIcon(heading) {
+      const deg = Number.isFinite(heading) ? heading : 0;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><g transform="rotate(${deg} 16 16)"><path d="M16 4 L21 22 L16 18 L11 22 Z" fill="#e85d04" stroke="#fff" stroke-width="1.2"/><circle cx="16" cy="16" r="3.2" fill="#9adf4c" stroke="#10200c" stroke-width="1"/></g></svg>`;
+      return new T.Icon({
+        iconUrl: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+        iconSize: new T.Point(32, 32),
+        iconAnchor: new T.Point(16, 16)
+      });
+    }
+    function resizeRtkMap() {
+      if (rtkMapState.map && typeof rtkMapState.map.checkResize === 'function') rtkMapState.map.checkResize();
+    }
+    async function ensureRtkMap() {
+      await loadTiandituApi();
+      if (rtkMapState.map) {
+        resizeRtkMap();
+        return rtkMapState.map;
+      }
+      const map = new T.Map('rtkMap');
+      map.centerAndZoom(new T.LngLat(104.195397, 35.86166), 5);
+      if (typeof map.enableScrollWheelZoom === 'function') map.enableScrollWheelZoom();
+      if (typeof TMAP_HYBRID_MAP !== 'undefined') {
+        try { map.setMapType(TMAP_HYBRID_MAP); } catch {}
+      }
+      rtkMapState.map = map;
+      setTimeout(resizeRtkMap, 120);
+      return map;
+    }
+    function updateRtkMapMeta(count) {
+      rtkMapMeta.textContent = count
+        ? `已在天地图绘制 ${count} 个轨迹点`
+        : '等待有效 RTK 经纬度后绘制轨迹';
+    }
+    function resetRtkTrack() {
+      if (rtkMapState.map) {
+        if (rtkMapState.polyline) rtkMapState.map.removeOverLay(rtkMapState.polyline);
+        if (rtkMapState.marker) rtkMapState.map.removeOverLay(rtkMapState.marker);
+      }
+      rtkMapState.polyline = null;
+      rtkMapState.marker = null;
+      rtkMapState.points = [];
+      rtkMapState.lastKey = '';
+      updateRtkMapMeta(0);
+    }
+    function appendRtkTrackPoint(reading) {
+      if (!rtkMapState.map || !reading || !reading.latitude || !reading.longitude) return;
+      const lat = reading.latitude.value;
+      const lng = reading.longitude.value;
+      const key = lat.toFixed(7) + ',' + lng.toFixed(7);
+      if (key === rtkMapState.lastKey) return;
+      rtkMapState.lastKey = key;
+      const lnglat = new T.LngLat(lng, lat);
+      rtkMapState.points.push(lnglat);
+      if (rtkMapState.polyline) rtkMapState.map.removeOverLay(rtkMapState.polyline);
+      rtkMapState.polyline = new T.Polyline(rtkMapState.points, {
+        color: '#9adf4c', weight: 4, opacity: 0.95, lineStyle: 'solid'
+      });
+      rtkMapState.map.addOverLay(rtkMapState.polyline);
+      const heading = reading.heading && Number.isFinite(reading.heading.value) ? reading.heading.value : 0;
+      const icon = planeIcon(heading);
+      if (rtkMapState.marker) {
+        rtkMapState.marker.setLngLat(lnglat);
+        if (typeof rtkMapState.marker.setIcon === 'function') rtkMapState.marker.setIcon(icon);
+      } else {
+        rtkMapState.marker = new T.Marker(lnglat, { icon, title: '飞行器' });
+        rtkMapState.map.addOverLay(rtkMapState.marker);
+      }
+      if (rtkMapState.points.length === 1) rtkMapState.map.centerAndZoom(lnglat, 17);
+      else if (rtkMapState.points.length <= 8) rtkMapState.map.setViewport(rtkMapState.points);
+      else rtkMapState.map.panTo(lnglat);
+      updateRtkMapMeta(rtkMapState.points.length);
+    }
+    function seedRtkTrack(items) {
+      resetRtkTrack();
+      (items || [])
+        .filter(item => item.type === 'READ_AGRAS_RTK_STATUS' && item.status === 'SUCCEEDED')
+        .sort((a, b) => Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0))
+        .forEach(item => appendRtkTrackPoint(parseRtkReading(item)));
+    }
     async function requestRtkSample(requestedDevice) {
       rtkReadStatus.textContent = '命令正在发送，等待遥控器打开 Agras RTK 设置页…';
       const response = await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({
@@ -595,6 +704,7 @@
         await loadRtkReadings();
         if (command.status === 'SUCCEEDED' || command.status === 'FAILED') {
           const reading = parseRtkReading(command);
+          if (command.status === 'SUCCEEDED') appendRtkTrackPoint(reading);
           rtkReadStatus.textContent = command.status === 'FAILED' ? '读取失败：' + (command.message || '未知错误')
             : reading.latitude && reading.longitude
               ? [`读取成功：经度 ${reading.longitude.value.toFixed(9)}`, `纬度 ${reading.latitude.value.toFixed(9)}`,
@@ -618,7 +728,15 @@
       rtkStopRequested = false;
       rtkReadButton.disabled = true;
       rtkStopButton.disabled = false;
-      rtkReadStatus.textContent = '连续读取已启动…';
+      rtkReadStatus.textContent = '连续读取已启动，正在加载天地图…';
+      try {
+        await ensureRtkMap();
+        const history = await api('/api/admin/commands?deviceId=' + encodeURIComponent(requestedDevice));
+        seedRtkTrack(history.status === 200 ? history.body && history.body.items : []);
+        rtkReadStatus.textContent = '连续读取已启动，天地图已就绪…';
+      } catch (error) {
+        rtkReadStatus.textContent = '天地图加载失败：' + error.message + '。仍会继续读取坐标。';
+      }
       while (rtkMonitoring) {
         if (deviceId.value.trim() !== rtkMonitoringDevice) {
           rtkReadStatus.textContent = '设备选择已改变，连续读取已停止。';
