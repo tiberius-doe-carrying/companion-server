@@ -342,7 +342,8 @@
             <p class="lead">仅发送安全导航命令。锁机、起飞、喷洒、返航等危险操作会被服务端拦截。</p>
             <div class="actions four">
               <button type="button" onclick="quick('OPEN_DJI',{})">启动官方 App</button>
-              <button id="rtkReadButton" type="button" onclick="requestRtkStatus()">读取 RTK 经纬度</button>
+              <button id="rtkReadButton" type="button" onclick="startRtkMonitoring()">开始连续读取 RTK</button>
+              <button id="rtkStopButton" class="secondary" type="button" onclick="stopRtkMonitoring()" disabled>停止读取</button>
               <button type="button" onclick="quick('INSPECT_PAGE',{})">读取当前页面</button>
               <button class="secondary" type="button" onclick="quick('BACK',{})">返回</button>
               <button class="secondary" type="button" onclick="quick('WAIT_PAGE',{timeoutMs:10000})">等待 Agras 前台</button>
@@ -350,7 +351,7 @@
           </div>
           <div class="card">
             <h2>RTK 经纬度读取记录</h2>
-            <p class="lead" id="rtkReadStatus">点击上方按钮后，遥控器会打开 Agras RTK 设置页并读取当前显示值。</p>
+            <p class="lead" id="rtkReadStatus">开始后会连续读取飞行器经纬度、海拔和航向角；点击停止后不再发送新的读取命令。</p>
             <div class="history" id="rtkReadingList"><div class="empty">暂无 RTK 读取记录</div></div>
           </div>
         </section>
@@ -561,18 +562,17 @@
       const response = await api('/api/admin/commands?deviceId=' + encodeURIComponent(deviceId.value.trim()));
       if (response.status === 200) renderRtkReadings(response.body && response.body.items);
     }
-    async function requestRtkStatus() {
-      const requestedDevice = deviceId.value.trim();
-      if (!requestedDevice) return out('请先选择设备');
-      rtkReadButton.disabled = true;
+    let rtkMonitoring = false;
+    let rtkMonitoringDevice = '';
+    let rtkStopRequested = false;
+    async function requestRtkSample(requestedDevice) {
       rtkReadStatus.textContent = '命令正在发送，等待遥控器打开 Agras RTK 设置页…';
       const response = await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({
         deviceId: requestedDevice, type: 'READ_AGRAS_RTK_STATUS', payload: {}
       }) });
       if (response.status !== 201) {
-        rtkReadButton.disabled = false;
         rtkReadStatus.textContent = '发布失败：' + (response.body && (response.body.message || response.body.error) || 'HTTP ' + response.status);
-        return;
+        return false;
       }
       out(`RTK 经纬度读取命令已排队\n设备：${requestedDevice}\n命令：${response.body.id}`);
       for (let attempt = 0; attempt < 40; attempt++) {
@@ -588,14 +588,51 @@
                   reading.altitude ? `海拔 ${reading.altitude.value.toFixed(4)} m` : '',
                   reading.heading ? `航向角 ${reading.heading.value.toFixed(4)}°` : ''].filter(Boolean).join('，')
               : '已读取 RTK 页面，但当前没有有效经纬度（请确认飞行器和 RTK 已连接）。';
-          rtkReadButton.disabled = false;
           list();
-          return;
+          return true;
         }
         rtkReadStatus.textContent = command.status === 'DELIVERED' ? '遥控器正在读取 RTK 页面…' : '等待遥控器接收命令…';
       }
       rtkReadStatus.textContent = '读取仍在进行，可稍后查看下方记录。';
+      return false;
+    }
+    async function startRtkMonitoring() {
+      if (rtkMonitoring) return;
+      const requestedDevice = deviceId.value.trim();
+      if (!requestedDevice) return out('请先选择设备');
+      rtkMonitoring = true;
+      rtkMonitoringDevice = requestedDevice;
+      rtkStopRequested = false;
+      rtkReadButton.disabled = true;
+      rtkStopButton.disabled = false;
+      rtkReadStatus.textContent = '连续读取已启动…';
+      while (rtkMonitoring) {
+        if (deviceId.value.trim() !== rtkMonitoringDevice) {
+          rtkReadStatus.textContent = '设备选择已改变，连续读取已停止。';
+          break;
+        }
+        const completed = await requestRtkSample(rtkMonitoringDevice);
+        if (!rtkMonitoring) break;
+        if (!completed) {
+          rtkReadStatus.textContent += ' 连续读取已停止。';
+          break;
+        }
+        rtkReadStatus.textContent += '；2 秒后读取下一次…';
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      if (rtkStopRequested) rtkReadStatus.textContent = '连续读取已停止。最后一次结果：' + rtkReadStatus.textContent;
+      rtkMonitoring = false;
+      rtkMonitoringDevice = '';
+      rtkStopRequested = false;
       rtkReadButton.disabled = false;
+      rtkStopButton.disabled = true;
+    }
+    function stopRtkMonitoring() {
+      if (!rtkMonitoring) return;
+      rtkStopRequested = true;
+      rtkMonitoring = false;
+      rtkStopButton.disabled = true;
+      rtkReadStatus.textContent = '正在停止；当前读取完成后不会再发送新命令…';
     }
     async function requestInventory() {
       if (!deviceId.value.trim()) return out('请先选择设备');
