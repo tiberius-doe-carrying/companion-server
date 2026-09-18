@@ -517,18 +517,27 @@
     }
     function parseRtkReading(command) {
       const texts = rtkTexts(command.message);
+      const aircraftIndex = texts.findIndex(text => text === '飞行器');
+      const aircraftValues = aircraftIndex >= 0 ? texts.slice(aircraftIndex + 1, aircraftIndex + 7) : [];
       // Agras 的 RTK 表格每一列复用同一组资源 ID；第一项是飞行器，第二项是网络 RTK。
-      // 优先按资源 ID 读取，兼容 DJI 自定义控件将值暴露为 text 或 contentDescription。
+      // 部分版本不暴露资源 ID，而是按“飞行器”后依次返回：定向、定位、纬度、经度、海拔、航向角。
+      // 因此先尝试资源 ID，再使用已确认的表格顺序。
       const latitude = rtkNumber(rtkValuesById(command.message, 'latitude')[0], -90, 90)
+        || rtkNumber(aircraftValues[2], -90, 90)
         || rtkCoordinateAfter(texts, '纬度', -90, 90);
       const longitude = rtkNumber(rtkValuesById(command.message, 'longitude')[0], -180, 180)
+        || rtkNumber(aircraftValues[3], -180, 180)
         || rtkCoordinateAfter(texts, '经度', -180, 180);
-      const altitude = rtkNumber(rtkValuesById(command.message, 'altitude')[0], -2000, 20000);
-      const heading = rtkNumber(rtkValuesById(command.message, 'direction')[0], -360, 360);
+      const altitude = rtkNumber(rtkValuesById(command.message, 'altitude')[0], -2000, 20000)
+        || rtkNumber(aircraftValues[4], -2000, 20000);
+      const heading = rtkNumber(rtkValuesById(command.message, 'direction')[0], -360, 360)
+        || rtkNumber(aircraftValues[5], -360, 360);
       const fixValues = rtkValuesById(command.message, 'fix_status');
       const statusLabels = ['固定解', '浮点解', '单点解', '已定位', '定位中', '未定位', '无信号'];
-      const positionStatus = fixValues[0] || statusLabels.find(label => texts.some(text => text.includes(label))) || '';
-      return { latitude, longitude, altitude, heading, positionStatus };
+      const orientationStatus = aircraftValues[0] || '';
+      const positionStatus = fixValues[0] || aircraftValues[1]
+        || statusLabels.find(label => texts.some(text => text.includes(label))) || '';
+      return { latitude, longitude, altitude, heading, orientationStatus, positionStatus };
     }
     function renderRtkReadings(items) {
       const rows = (items || []).filter(item => item.type === 'READ_AGRAS_RTK_STATUS')
@@ -542,7 +551,9 @@
               reading.altitude ? `海拔 ${reading.altitude.value.toFixed(4)} m` : '',
               reading.heading ? `航向角 ${reading.heading.value.toFixed(4)}°` : ''].filter(Boolean).join(' · ')
           : (item.status === 'FAILED' ? (item.message || '读取失败') : '官方 RTK 页面未显示有效经纬度');
-        return `<div class="cmd" title="${escapeHtml(item.message || coordinates)}"><span class="type">${escapeHtml(item.deviceId || deviceId.value)}</span><span class="msg"><b>${escapeHtml(coordinates)}</b>${reading.positionStatus ? ' · ' + escapeHtml(reading.positionStatus) : ''}<br><small>${escapeHtml(new Date(item.acknowledgedAt || item.createdAt).toLocaleString())}</small></span><span class="status ${escapeHtml(item.status || '')}">${escapeHtml(state)}</span></div>`;
+        const fixes = [reading.orientationStatus ? `定向 ${reading.orientationStatus}` : '',
+          reading.positionStatus ? `定位 ${reading.positionStatus}` : ''].filter(Boolean).join(' · ');
+        return `<div class="cmd" title="${escapeHtml(item.message || coordinates)}"><span class="type">${escapeHtml(item.deviceId || deviceId.value)}</span><span class="msg"><b>${escapeHtml(coordinates)}</b>${fixes ? '<br><small>' + escapeHtml(fixes) + '</small>' : ''}<br><small>${escapeHtml(new Date(item.acknowledgedAt || item.createdAt).toLocaleString())}</small></span><span class="status ${escapeHtml(item.status || '')}">${escapeHtml(state)}</span></div>`;
       }).join('') || '<div class="empty">暂无 RTK 读取记录</div>';
     }
     async function loadRtkReadings() {
