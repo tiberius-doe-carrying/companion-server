@@ -445,7 +445,7 @@
       $(tab.dataset.panel).classList.add('active');
       if (tab.dataset.panel === 'devicePanel') loadDevices();
       if (tab.dataset.panel === 'jobPanel') { loadInventory(); loadBindings(); }
-      if (tab.dataset.panel === 'controlPanel') { loadRtkReadings(); loadScreenshot(); resizeRtkMap(); }
+      if (tab.dataset.panel === 'controlPanel') { loadRtkReadings(); loadScreenshot(); setTimeout(resizeRtkMap, 60); }
       if (tab.dataset.panel === 'recordPanel') list();
     });
 
@@ -652,7 +652,14 @@
       rtkMapState.lastKey = '';
       updateRtkMapMeta(0);
     }
-    function appendRtkTrackPoint(reading) {
+    function followRtkTrack() {
+      if (!rtkMapState.points.length) return;
+      const last = rtkMapState.points[rtkMapState.points.length - 1];
+      if (rtkMapState.points.length === 1) rtkMapState.map.centerAndZoom(last, 17);
+      else if (rtkMapState.points.length <= 8) rtkMapState.map.setViewport(rtkMapState.points);
+      else rtkMapState.map.panTo(last);
+    }
+    function appendRtkTrackPoint(reading, silent) {
       if (!rtkMapState.map || !reading || !reading.latitude || !reading.longitude) return;
       const lat = reading.latitude.value;
       const lng = reading.longitude.value;
@@ -675,9 +682,7 @@
         rtkMapState.marker = new T.Marker(lnglat, { icon, title: '飞行器' });
         rtkMapState.map.addOverLay(rtkMapState.marker);
       }
-      if (rtkMapState.points.length === 1) rtkMapState.map.centerAndZoom(lnglat, 17);
-      else if (rtkMapState.points.length <= 8) rtkMapState.map.setViewport(rtkMapState.points);
-      else rtkMapState.map.panTo(lnglat);
+      if (!silent) followRtkTrack();
       updateRtkMapMeta(rtkMapState.points.length);
     }
     function seedRtkTrack(items) {
@@ -685,7 +690,8 @@
       (items || [])
         .filter(item => item.type === 'READ_AGRAS_RTK_STATUS' && item.status === 'SUCCEEDED')
         .sort((a, b) => Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0))
-        .forEach(item => appendRtkTrackPoint(parseRtkReading(item)));
+        .forEach(item => appendRtkTrackPoint(parseRtkReading(item), true));
+      followRtkTrack();
     }
     async function requestRtkSample(requestedDevice) {
       rtkReadStatus.textContent = '命令正在发送，等待遥控器打开 Agras RTK 设置页…';
