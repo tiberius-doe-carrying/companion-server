@@ -25,6 +25,8 @@ fs.mkdirSync(prescriptionDir, { recursive: true });
 const commands = new Map();
 const queues = new Map();
 const devices = new Map();
+// 每台设备保留最近一段轨迹；真实坐标只能由授权遥测适配器上报，不在服务端伪造。
+const telemetry = new Map();
 const inventories = new Map();
 const jobBindings = new Map();
 const prescriptions = new Map();
@@ -95,6 +97,17 @@ function text(res, status, body, type = 'text/plain; charset=utf-8') {
 
 function authorizedDevice(req) {
   return req.headers.authorization === `Bearer ${DEVICE_TOKEN}`;
+}
+
+function telemetryPoint(body) {
+  const latitude = Number(body.latitude), longitude = Number(body.longitude);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) throw Object.assign(new Error('latitude_out_of_range'), { status: 400 });
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) throw Object.assign(new Error('longitude_out_of_range'), { status: 400 });
+  return { latitude, longitude, altitude: Number.isFinite(Number(body.altitude)) ? Number(body.altitude) : null,
+    speed: Number.isFinite(Number(body.speed)) ? Number(body.speed) : null,
+    heading: Number.isFinite(Number(body.heading)) ? Number(body.heading) : null,
+    isFlying: typeof body.isFlying === 'boolean' ? body.isFlying : null,
+    source: String(body.source || 'sdk').slice(0, 40), timestamp: new Date().toISOString() };
 }
 
 function authorizedAdmin(req) {
@@ -247,6 +260,19 @@ const server = http.createServer(async (req, res) => {
       inventories.set(deviceId, record);
       return json(res, 200, record);
     }
+    if (req.method === 'POST' && url.pathname === '/api/device/telemetry') {
+      if (!authorizedDevice(req)) return json(res, 401, { error: 'invalid_device_token' });
+      const body = await readJson(req);
+      const deviceId = String(body.deviceId || '').trim();
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      const point = telemetryPoint(body);
+      const record = telemetry.get(deviceId) || { deviceId, points: [] };
+      record.points.push(point);
+      record.points = record.points.slice(-2000);
+      record.updatedAt = point.timestamp;
+      telemetry.set(deviceId, record);
+      return json(res, 200, { deviceId, point, updatedAt: record.updatedAt });
+    }
     if (req.method === 'GET' && url.pathname === '/api/admin/devices') {
       if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
       const items = [...devices.values()].map(deviceView).sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
@@ -257,6 +283,13 @@ const server = http.createServer(async (req, res) => {
       const deviceId = String(url.searchParams.get('deviceId') || '').trim();
       if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
       return json(res, 200, inventories.get(deviceId) || { deviceId, jobs: [], prescriptions: [], updatedAt: null });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/telemetry') {
+      if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
+      const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      const record = telemetry.get(deviceId);
+      return json(res, 200, record || { deviceId, points: [], updatedAt: null });
     }
     if (req.method === 'GET' && url.pathname === '/api/admin/job-bindings') {
       if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });

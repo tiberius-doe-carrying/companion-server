@@ -51,6 +51,20 @@ OpenAPI 文档：`http://127.0.0.1:8787/openapi.json`。
 
 ## 上传处方图
 
+## 实时遥测与轨迹
+
+服务端提供真实遥测的接入骨架，不会生成或推测坐标。授权 DJI SDK、司空 Sync 或其他合规遥测适配器可以向设备接口上报：
+
+```http
+POST /api/device/telemetry
+Authorization: Bearer <device-token>
+Content-Type: application/json
+
+{"deviceId":"rc-t100-001","latitude":30.123456,"longitude":120.123456,"altitude":18.2,"speed":4.1,"heading":92,"isFlying":true,"source":"dji-sdk"}
+```
+
+服务端为每台设备保留最近 2000 个点。网页“设备状态”页会自动绘制轨迹、显示最近上报时间和飞行状态；管理端也可通过 `GET /api/admin/telemetry?deviceId=...` 读取。当前伴随 App 的无障碍页面控制本身不是飞控遥测来源，未接入授权遥测适配器前网页会显示“等待设备上报真实遥测”。
+
 网页“作业准备”页可请求设备同步 Agras 作业列表和已导入处方图列表，保存“作业 → 处方图”关联，并下发 `PREPARE_AGRAS_JOB`。伴随 App 会按名称定位“作业-本地”中的指定记录并点击该行右侧进入箭头，进入地图页后精确选择指定处方图并确认，随后点击官方页面右下角“调用”和“执行”。官方自身的飞行器连接、账号权限及安全确认仍会继续生效，命令只接受设备最近同步清单中存在的名称。清单接口为 `GET /api/admin/agras-inventory`、`POST /api/device/agras-inventory`，关联接口为 `GET/POST /api/admin/job-bindings`；服务重启后当前清单与关联会清空。
 
 网页控制台必须同时选择一个 `.tif` 和一个 `.tfw` 文件。两者扩展名前的基础名称必须完全一致（扩展名大小写不敏感）。每个文件最大 1 GiB；服务端和 Android 均流式处理：

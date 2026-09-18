@@ -280,6 +280,12 @@
               <button class="secondary" type="button" onclick="list()">查看最近命令</button>
             </div>
           </div>
+          <div class="card">
+            <h2>实时轨迹</h2>
+            <p class="lead">仅显示设备通过授权遥测接口上报的真实位置；没有遥测数据时不会绘制模拟轨迹。</p>
+            <div class="metric"><span id="telemetryStatus">等待遥测</span><strong id="telemetryState">—</strong></div>
+            <svg id="telemetryMap" viewBox="0 0 900 360" role="img" aria-label="飞机实时轨迹" style="width:100%;height:280px;background:#eef4f7;border-radius:16px;margin-top:14px"><polyline id="telemetryLine" fill="none" stroke="#0b7285" stroke-width="4" points=""></polyline><circle id="telemetryPlane" r="8" fill="#e85d04" cx="0" cy="0" visibility="hidden"></circle></svg>
+          </div>
         </section>
 
         <section id="prescriptionPanel" class="panel">
@@ -744,6 +750,22 @@
         devices.textContent = '读取失败：' + error.message;
       }
     }
+    async function loadTelemetry() {
+      if (!deviceId.value.trim()) return;
+      const response = await api('/api/admin/telemetry?deviceId=' + encodeURIComponent(deviceId.value.trim()));
+      if (response.status !== 200) { telemetryStatus.textContent = '读取遥测失败'; return; }
+      const points = (response.body && response.body.points) || [];
+      if (!points.length) { telemetryStatus.textContent = '等待设备上报真实遥测'; telemetryState.textContent = '无位置数据'; telemetryLine.setAttribute('points', ''); telemetryPlane.setAttribute('visibility', 'hidden'); return; }
+      const minLat = Math.min(...points.map(p => p.latitude)), maxLat = Math.max(...points.map(p => p.latitude));
+      const minLng = Math.min(...points.map(p => p.longitude)), maxLng = Math.max(...points.map(p => p.longitude));
+      const dx = Math.max(maxLng - minLng, 0.00001), dy = Math.max(maxLat - minLat, 0.00001);
+      const project = p => `${40 + ((p.longitude - minLng) / dx) * 820},${320 - ((p.latitude - minLat) / dy) * 280}`;
+      telemetryLine.setAttribute('points', points.map(project).join(' '));
+      const last = points[points.length - 1], [x, y] = project(last).split(',');
+      telemetryPlane.setAttribute('cx', x); telemetryPlane.setAttribute('cy', y); telemetryPlane.setAttribute('visibility', 'visible');
+      telemetryStatus.textContent = `最近上报：${new Date(last.timestamp).toLocaleString()}`;
+      telemetryState.textContent = last.isFlying === true ? '飞行中' : last.isFlying === false ? '未飞行' : '状态未知';
+    }
     async function ping() {
       try {
         const response = await fetch('/api/health');
@@ -757,7 +779,7 @@
     }
     ping();
     loadDevices();
-    setInterval(() => { if (devicePanel.classList.contains('active')) loadDevices(); }, 5000);
+    setInterval(() => { if (devicePanel.classList.contains('active')) { loadDevices(); loadTelemetry(); } }, 5000);
     setInterval(() => { if (prescriptionPanel.classList.contains('active') || recordPanel.classList.contains('active')) list(); }, 3000);
     setInterval(ping, 15000);
   </script>
