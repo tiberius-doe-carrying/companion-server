@@ -342,11 +342,16 @@
             <p class="lead">仅发送安全导航命令。锁机、起飞、喷洒、返航等危险操作会被服务端拦截。</p>
             <div class="actions four">
               <button type="button" onclick="quick('OPEN_DJI',{})">启动官方 App</button>
-              <button type="button" onclick="quick('READ_AGRAS_RTK_STATUS',{})">读取 RTK 经纬度</button>
+              <button id="rtkReadButton" type="button" onclick="requestRtkStatus()">读取 RTK 经纬度</button>
               <button type="button" onclick="quick('INSPECT_PAGE',{})">读取当前页面</button>
               <button class="secondary" type="button" onclick="quick('BACK',{})">返回</button>
               <button class="secondary" type="button" onclick="quick('WAIT_PAGE',{timeoutMs:10000})">等待 Agras 前台</button>
             </div>
+          </div>
+          <div class="card">
+            <h2>RTK 经纬度读取记录</h2>
+            <p class="lead" id="rtkReadStatus">点击上方按钮后，遥控器会打开 Agras RTK 设置页并读取当前显示值。</p>
+            <div class="history" id="rtkReadingList"><div class="empty">暂无 RTK 读取记录</div></div>
           </div>
         </section>
 
@@ -411,6 +416,7 @@
       $(tab.dataset.panel).classList.add('active');
       if (tab.dataset.panel === 'devicePanel') loadDevices();
       if (tab.dataset.panel === 'jobPanel') { loadInventory(); loadBindings(); }
+      if (tab.dataset.panel === 'controlPanel') loadRtkReadings();
       if (tab.dataset.panel === 'recordPanel') list();
     });
 
@@ -475,6 +481,85 @@
       type.value = commandType;
       $('payload').value = JSON.stringify(commandPayload, null, 2);
       send();
+    }
+
+    function rtkTexts(message) {
+      return String(message || '').split(/\r?\n/).map(line => {
+        const match = line.match(/(?:^|\s)text=(.*?)(?=\s(?:desc|id|clickable)=|$)/);
+        return match ? match[1].trim() : '';
+      }).filter(Boolean);
+    }
+    function rtkCoordinateAfter(texts, label, min, max) {
+      for (let index = texts.length - 1; index >= 0; index--) {
+        if (texts[index] !== label) continue;
+        for (let offset = 1; offset <= 5 && index + offset < texts.length; offset++) {
+          const raw = texts[index + offset].replace(/[°度,，]/g, '').trim();
+          if (!/^-?\d{1,3}(?:\.\d+)?$/.test(raw)) continue;
+          const value = Number(raw);
+          if (Number.isFinite(value) && value >= min && value <= max) return { value, raw: texts[index + offset] };
+        }
+      }
+      return null;
+    }
+    function parseRtkReading(command) {
+      const texts = rtkTexts(command.message);
+      const latitude = rtkCoordinateAfter(texts, '纬度', -90, 90);
+      const longitude = rtkCoordinateAfter(texts, '经度', -180, 180);
+      const statusLabels = ['固定解', '浮点解', '单点解', '已定位', '定位中', '未定位', '无信号'];
+      const positionStatus = statusLabels.find(label => texts.some(text => text.includes(label))) || '';
+      return { latitude, longitude, positionStatus };
+    }
+    function renderRtkReadings(items) {
+      const rows = (items || []).filter(item => item.type === 'READ_AGRAS_RTK_STATUS')
+        .sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0)).slice(0, 20);
+      rtkReadingList.innerHTML = rows.map(item => {
+        const reading = parseRtkReading(item);
+        const state = item.status === 'QUEUED' ? '等待设备' : item.status === 'DELIVERED' ? '读取中'
+          : item.status === 'FAILED' ? '读取失败' : reading.latitude && reading.longitude ? '已读取' : '暂无坐标';
+        const coordinates = reading.latitude && reading.longitude
+          ? `经度 ${reading.longitude.value.toFixed(8)} · 纬度 ${reading.latitude.value.toFixed(8)}`
+          : (item.status === 'FAILED' ? (item.message || '读取失败') : '官方 RTK 页面未显示有效经纬度');
+        return `<div class="cmd" title="${escapeHtml(item.message || coordinates)}"><span class="type">${escapeHtml(item.deviceId || deviceId.value)}</span><span class="msg"><b>${escapeHtml(coordinates)}</b>${reading.positionStatus ? ' · ' + escapeHtml(reading.positionStatus) : ''}<br><small>${escapeHtml(new Date(item.acknowledgedAt || item.createdAt).toLocaleString())}</small></span><span class="status ${escapeHtml(item.status || '')}">${escapeHtml(state)}</span></div>`;
+      }).join('') || '<div class="empty">暂无 RTK 读取记录</div>';
+    }
+    async function loadRtkReadings() {
+      if (!deviceId.value.trim()) return;
+      const response = await api('/api/admin/commands?deviceId=' + encodeURIComponent(deviceId.value.trim()));
+      if (response.status === 200) renderRtkReadings(response.body && response.body.items);
+    }
+    async function requestRtkStatus() {
+      const requestedDevice = deviceId.value.trim();
+      if (!requestedDevice) return out('请先选择设备');
+      rtkReadButton.disabled = true;
+      rtkReadStatus.textContent = '命令正在发送，等待遥控器打开 Agras RTK 设置页…';
+      const response = await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({
+        deviceId: requestedDevice, type: 'READ_AGRAS_RTK_STATUS', payload: {}
+      }) });
+      if (response.status !== 201) {
+        rtkReadButton.disabled = false;
+        rtkReadStatus.textContent = '发布失败：' + (response.body && (response.body.message || response.body.error) || 'HTTP ' + response.status);
+        return;
+      }
+      out(`RTK 经纬度读取命令已排队\n设备：${requestedDevice}\n命令：${response.body.id}`);
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const result = await api('/api/admin/commands/' + encodeURIComponent(response.body.id));
+        const command = result.body || {};
+        await loadRtkReadings();
+        if (command.status === 'SUCCEEDED' || command.status === 'FAILED') {
+          const reading = parseRtkReading(command);
+          rtkReadStatus.textContent = command.status === 'FAILED' ? '读取失败：' + (command.message || '未知错误')
+            : reading.latitude && reading.longitude
+              ? `读取成功：经度 ${reading.longitude.value.toFixed(8)}，纬度 ${reading.latitude.value.toFixed(8)}`
+              : '已读取 RTK 页面，但当前没有有效经纬度（请确认飞行器和 RTK 已连接）。';
+          rtkReadButton.disabled = false;
+          list();
+          return;
+        }
+        rtkReadStatus.textContent = command.status === 'DELIVERED' ? '遥控器正在读取 RTK 页面…' : '等待遥控器接收命令…';
+      }
+      rtkReadStatus.textContent = '读取仍在进行，可稍后查看下方记录。';
+      rtkReadButton.disabled = false;
     }
     async function requestInventory() {
       if (!deviceId.value.trim()) return out('请先选择设备');
@@ -782,6 +867,7 @@
     ping();
     loadDevices();
     setInterval(() => { if (devicePanel.classList.contains('active')) { loadDevices(); loadTelemetry(); } }, 5000);
+    setInterval(() => { if (controlPanel.classList.contains('active')) loadRtkReadings(); }, 3000);
     setInterval(() => { if (prescriptionPanel.classList.contains('active') || recordPanel.classList.contains('active')) list(); }, 3000);
     setInterval(ping, 15000);
   </script>
