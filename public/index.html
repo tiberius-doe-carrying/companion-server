@@ -354,6 +354,19 @@
             <p class="lead" id="rtkReadStatus">开始后会连续读取飞行器经纬度、海拔和航向角；点击停止后不再发送新的读取命令。</p>
             <div class="history" id="rtkReadingList"><div class="empty">暂无 RTK 读取记录</div></div>
           </div>
+          <div class="card">
+            <h2>遥控器画面采集</h2>
+            <p class="lead" id="screenCaptureStatus">首次开始时，需要在遥控器上人工确认 Android 系统录屏授权。</p>
+            <div class="actions">
+              <button type="button" onclick="screenCaptureCommand('START_SCREEN_CAPTURE')">1. 开始采集</button>
+              <button type="button" onclick="captureScreenNow()">2. 获取最新画面</button>
+              <button class="secondary" type="button" onclick="screenCaptureCommand('STOP_SCREEN_CAPTURE')">停止采集</button>
+            </div>
+            <div style="margin-top:14px;background:#101820;border-radius:16px;min-height:220px;display:grid;place-items:center;overflow:hidden">
+              <img id="screenCaptureImage" alt="遥控器最新采集画面" style="display:none;width:100%;height:auto;max-height:620px;object-fit:contain">
+              <span id="screenCaptureEmpty" style="color:#aebbc4">尚未获取画面</span>
+            </div>
+          </div>
         </section>
 
         <section id="recordPanel" class="panel">
@@ -417,7 +430,7 @@
       $(tab.dataset.panel).classList.add('active');
       if (tab.dataset.panel === 'devicePanel') loadDevices();
       if (tab.dataset.panel === 'jobPanel') { loadInventory(); loadBindings(); }
-      if (tab.dataset.panel === 'controlPanel') loadRtkReadings();
+      if (tab.dataset.panel === 'controlPanel') { loadRtkReadings(); loadScreenshot(); }
       if (tab.dataset.panel === 'recordPanel') list();
     });
 
@@ -633,6 +646,69 @@
       rtkMonitoring = false;
       rtkStopButton.disabled = true;
       rtkReadStatus.textContent = '正在停止；当前读取完成后不会再发送新命令…';
+    }
+    async function screenCaptureCommand(commandType) {
+      const requestedDevice = deviceId.value.trim();
+      if (!requestedDevice) return out('请先选择设备');
+      screenCaptureStatus.textContent = commandType === 'START_SCREEN_CAPTURE'
+        ? '正在遥控器上打开录屏授权，请到遥控器确认…' : '正在停止屏幕采集…';
+      const response = await api('/api/admin/commands', { method: 'POST', body: JSON.stringify({
+        deviceId: requestedDevice, type: commandType, payload: {}
+      }) });
+      if (response.status !== 201) {
+        screenCaptureStatus.textContent = '命令发布失败：' + (response.body && (response.body.message || response.body.error) || response.status);
+        return null;
+      }
+      out(`${commandType} 已进入队列\n设备：${requestedDevice}\n命令：${response.body.id}`);
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const result = await api('/api/admin/commands/' + encodeURIComponent(response.body.id));
+        const command = result.body || {};
+        if (command.status === 'SUCCEEDED' || command.status === 'FAILED') {
+          screenCaptureStatus.textContent = command.message || (command.status === 'SUCCEEDED' ? '操作成功' : '操作失败');
+          list();
+          return command;
+        }
+      }
+      screenCaptureStatus.textContent = '命令仍在执行，请稍后重试。';
+      return null;
+    }
+    async function screenshotStatus() {
+      return api('/api/admin/screenshot/status?deviceId=' + encodeURIComponent(deviceId.value.trim()));
+    }
+    async function loadScreenshot() {
+      const requestedDevice = deviceId.value.trim();
+      if (!requestedDevice) return;
+      const status = await screenshotStatus();
+      if (status.status !== 200 || !status.body || !status.body.updatedAt) return;
+      const response = await fetch('/api/admin/screenshot?deviceId=' + encodeURIComponent(requestedDevice) + '&t=' + Date.now(), {
+        headers: { 'X-Admin-Key': adminKey.value }
+      });
+      if (!response.ok) return;
+      const blob = await response.blob();
+      if (screenCaptureImage.dataset.objectUrl) URL.revokeObjectURL(screenCaptureImage.dataset.objectUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      screenCaptureImage.dataset.objectUrl = objectUrl;
+      screenCaptureImage.src = objectUrl;
+      screenCaptureImage.style.display = 'block';
+      screenCaptureEmpty.style.display = 'none';
+      screenCaptureStatus.textContent = `最新画面：${new Date(status.body.updatedAt).toLocaleString()} · ${formatBytes(status.body.size)}`;
+    }
+    async function captureScreenNow() {
+      const before = await screenshotStatus();
+      const previous = before.body && before.body.updatedAt;
+      const command = await screenCaptureCommand('CAPTURE_SCREEN');
+      if (!command || command.status !== 'SUCCEEDED') return;
+      screenCaptureStatus.textContent = '遥控器正在生成并上传 JPEG 画面…';
+      for (let attempt = 0; attempt < 20; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 750));
+        const current = await screenshotStatus();
+        if (current.status === 200 && current.body && current.body.updatedAt && current.body.updatedAt !== previous) {
+          await loadScreenshot();
+          return;
+        }
+      }
+      screenCaptureStatus.textContent = '截图命令已执行，但尚未收到图片；请确认录屏授权仍有效。';
     }
     async function requestInventory() {
       if (!deviceId.value.trim()) return out('请先选择设备');

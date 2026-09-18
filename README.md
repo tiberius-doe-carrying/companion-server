@@ -65,6 +65,18 @@ Content-Type: application/json
 
 服务端为每台设备保留最近 2000 个点。网页“设备状态”页会自动绘制轨迹、显示最近上报时间和飞行状态；管理端也可通过 `GET /api/admin/telemetry?deviceId=...` 读取。当前伴随 App 的无障碍页面控制本身不是飞控遥测来源，未接入授权遥测适配器前网页会显示“等待设备上报真实遥测”。
 
+## 遥控器画面采集
+
+网页“DJI 控制”页提供开始采集、获取最新画面和停止采集。首次开始时 Android 会在遥控器弹出系统录屏授权，必须由现场人员确认；伴随 App 不会绕过该授权。授权后 App 使用 `MediaProjection` 获取整块遥控器屏幕，将最新一帧压缩为 JPEG 上传。服务端每台设备只覆盖保存最新图片，单张上限 12 MiB。
+
+- `START_SCREEN_CAPTURE`：打开系统录屏授权；已经授权时不会重复弹窗。
+- `CAPTURE_SCREEN`：请求采集并上传一张最新画面。
+- `STOP_SCREEN_CAPTURE`：释放录屏会话。
+- `POST /api/device/screenshot?deviceId=...`：设备上传 JPEG。
+- `GET /api/admin/screenshot?deviceId=...`：管理端读取最新 JPEG。
+
+这是遥控器屏幕截图，不是无人机原始视频流。如果 DJI Agras 的相机窗口使用防截屏保护，该区域可能显示黑色；应先用此功能在目标遥控器上验证。
+
 网页“作业准备”页可请求设备同步 Agras 作业列表和已导入处方图列表，保存“作业 → 处方图”关联，并下发 `PREPARE_AGRAS_JOB`。伴随 App 会按名称定位“作业-本地”中的指定记录并点击该行右侧进入箭头，进入地图页后精确选择指定处方图并确认，随后点击官方页面右下角“调用”和“执行”。官方自身的飞行器连接、账号权限及安全确认仍会继续生效，命令只接受设备最近同步清单中存在的名称。清单接口为 `GET /api/admin/agras-inventory`、`POST /api/device/agras-inventory`，关联接口为 `GET/POST /api/admin/job-bindings`；服务重启后当前清单与关联会清空。
 
 网页控制台必须同时选择一个 `.tif` 和一个 `.tfw` 文件。两者扩展名前的基础名称必须完全一致（扩展名大小写不敏感）。每个文件最大 1 GiB；服务端和 Android 均流式处理：

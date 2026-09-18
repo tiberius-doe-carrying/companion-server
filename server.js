@@ -19,14 +19,18 @@ const DEVICE_TOKEN = process.env.T100_DEVICE_TOKEN || fileConfig.deviceToken || 
 const ADMIN_KEY = process.env.T100_ADMIN_KEY || fileConfig.adminKey || 'change-admin-key';
 const LOCAL_ADMIN_SESSION = crypto.randomBytes(32).toString('hex');
 const MAX_BODY = 128 * 1024;
+const MAX_SCREENSHOT_FILE = 12 * 1024 * 1024;
 const MAX_PRESCRIPTION_FILE = 1024 * 1024 * 1024;
 const prescriptionDir = path.join(__dirname, 'data', 'prescriptions');
+const screenshotDir = path.join(__dirname, 'data', 'screenshots');
 fs.mkdirSync(prescriptionDir, { recursive: true });
+fs.mkdirSync(screenshotDir, { recursive: true });
 const commands = new Map();
 const queues = new Map();
 const devices = new Map();
 // 每台设备保留最近一段轨迹；真实坐标只能由授权遥测适配器上报，不在服务端伪造。
 const telemetry = new Map();
+const screenshots = new Map();
 const inventories = new Map();
 const jobBindings = new Map();
 const prescriptions = new Map();
@@ -45,7 +49,8 @@ for (const name of fs.readdirSync(prescriptionDir).filter(value => value.endsWit
 }
 const ALLOWED_TYPES = new Set(['OPEN_DJI', 'OPEN_AGRAS', 'OPEN_APP', 'OPEN_DEEPLINK', 'INSPECT_PAGE',
   'CLICK_TEXT', 'CLICK_ID', 'CLICK_RATIO', 'WAIT_PAGE', 'BACK', 'DOWNLOAD_PRESCRIPTION', 'IMPORT_PRESCRIPTION',
-  'READ_AGRAS_INVENTORY', 'PREPARE_AGRAS_JOB', 'READ_AGRAS_RTK_STATUS']);
+  'READ_AGRAS_INVENTORY', 'PREPARE_AGRAS_JOB', 'READ_AGRAS_RTK_STATUS',
+  'START_SCREEN_CAPTURE', 'CAPTURE_SCREEN', 'STOP_SCREEN_CAPTURE']);
 const BLOCKED_TERMS = ['锁定', '解锁', '起飞', '开始任务', '执行任务', '返航', '降落', '紧急停止',
   '喷洒', '播撒', '转让', '删除', 'lock', 'unlock', 'takeoff', 'take_off', 'startmission',
   'start_mission', 'returntohome', 'return_to_home', 'landing', 'land', 'emergencystop',
@@ -132,6 +137,18 @@ async function readJson(req) {
   if (!chunks.length) return {};
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw Object.assign(new Error('Invalid JSON'), { status: 400 }); }
+}
+
+async function readBuffer(req, maxBytes) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw Object.assign(new Error('screen_capture_too_large'), { status: 413 });
+    chunks.push(chunk);
+  }
+  if (!size) throw Object.assign(new Error('screen_capture_empty'), { status: 400 });
+  return Buffer.concat(chunks);
 }
 
 function queueFor(deviceId) {
@@ -273,6 +290,20 @@ const server = http.createServer(async (req, res) => {
       telemetry.set(deviceId, record);
       return json(res, 200, { deviceId, point, updatedAt: record.updatedAt });
     }
+    if (req.method === 'POST' && url.pathname === '/api/device/screenshot') {
+      if (!authorizedDevice(req)) return json(res, 401, { error: 'invalid_device_token' });
+      const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      if (!/^image\/jpe?g(?:\s*;|$)/i.test(String(req.headers['content-type'] || ''))) {
+        return json(res, 415, { error: 'jpeg_required' });
+      }
+      const data = await readBuffer(req, MAX_SCREENSHOT_FILE);
+      const diskPath = path.join(screenshotDir, crypto.createHash('sha256').update(deviceId).digest('hex') + '.jpg');
+      fs.writeFileSync(diskPath, data);
+      const record = { deviceId, diskPath, size: data.length, updatedAt: new Date().toISOString() };
+      screenshots.set(deviceId, record);
+      return json(res, 200, { deviceId, size: record.size, updatedAt: record.updatedAt });
+    }
     if (req.method === 'GET' && url.pathname === '/api/admin/devices') {
       if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
       const items = [...devices.values()].map(deviceView).sort((a, b) => b.lastSeen.localeCompare(a.lastSeen));
@@ -290,6 +321,24 @@ const server = http.createServer(async (req, res) => {
       if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
       const record = telemetry.get(deviceId);
       return json(res, 200, record || { deviceId, points: [], updatedAt: null });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/screenshot') {
+      if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
+      const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      const record = screenshots.get(deviceId);
+      if (!record || !fs.existsSync(record.diskPath)) return json(res, 404, { error: 'screenshot_not_found' });
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': record.size,
+        'Cache-Control': 'no-store', 'X-Captured-At': record.updatedAt });
+      return fs.createReadStream(record.diskPath).pipe(res);
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/screenshot/status') {
+      if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
+      const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+      if (!deviceId) return json(res, 400, { error: 'deviceId_required' });
+      const record = screenshots.get(deviceId);
+      return json(res, 200, record ? { deviceId, size: record.size, updatedAt: record.updatedAt }
+        : { deviceId, size: 0, updatedAt: null });
     }
     if (req.method === 'GET' && url.pathname === '/api/admin/job-bindings') {
       if (!authorizedAdmin(req)) return json(res, 401, { error: 'invalid_admin_key' });
