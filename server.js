@@ -45,7 +45,7 @@ for (const name of fs.readdirSync(prescriptionDir).filter(value => value.endsWit
 }
 const ALLOWED_TYPES = new Set(['OPEN_DJI', 'OPEN_AGRAS', 'OPEN_APP', 'OPEN_DEEPLINK', 'INSPECT_PAGE',
   'CLICK_TEXT', 'CLICK_ID', 'CLICK_RATIO', 'WAIT_PAGE', 'BACK', 'DOWNLOAD_PRESCRIPTION', 'IMPORT_PRESCRIPTION',
-  'READ_AGRAS_INVENTORY', 'PREPARE_AGRAS_JOB']);
+  'READ_AGRAS_INVENTORY', 'PREPARE_AGRAS_JOB', 'READ_AGRAS_RTK_STATUS']);
 const BLOCKED_TERMS = ['锁定', '解锁', '起飞', '开始任务', '执行任务', '返航', '降落', '紧急停止',
   '喷洒', '播撒', '转让', '删除', 'lock', 'unlock', 'takeoff', 'take_off', 'startmission',
   'start_mission', 'returntohome', 'return_to_home', 'landing', 'land', 'emergencystop',

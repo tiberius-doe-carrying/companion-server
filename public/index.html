@@ -342,6 +342,7 @@
             <p class="lead">仅发送安全导航命令。锁机、起飞、喷洒、返航等危险操作会被服务端拦截。</p>
             <div class="actions four">
               <button type="button" onclick="quick('OPEN_DJI',{})">启动官方 App</button>
+              <button type="button" onclick="quick('READ_AGRAS_RTK_STATUS',{})">读取 RTK 经纬度</button>
               <button type="button" onclick="quick('INSPECT_PAGE',{})">读取当前页面</button>
               <button class="secondary" type="button" onclick="quick('BACK',{})">返回</button>
               <button class="secondary" type="button" onclick="quick('WAIT_PAGE',{timeoutMs:10000})">等待 Agras 前台</button>
